@@ -46,6 +46,18 @@ Copy `config.example.toml` to `config.toml` and edit `input.db_path` (and, if yo
 German cards, set `target.language = "de"`). Every key has a built-in default, so a
 config file is optional — flags can override anything.
 
+**koanki finds the config automatically** (no `--config` needed) from, in order:
+
+1. `./config.toml` — the directory you run koanki from
+2. `~/.config/koanki/config.toml` — a fixed, machine-wide location
+
+Use `~/.config/koanki/config.toml` if you want it picked up no matter where you run from.
+Pass `--config PATH` to override. **Precedence:** flags → config file → built-in defaults.
+
+> Relative paths in the config (`db_path`, `state.db_path`) resolve against your **current
+> working directory**. If you'll run koanki from different directories, use **absolute
+> paths** (e.g. `db_path = "/home/lna-dev/koanki/vocabulary_builder.sqlite3"`).
+
 ## Usage
 
 ```sh

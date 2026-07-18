@@ -104,8 +104,19 @@ func registerOverrides(fs *flag.FlagSet) *overrideFlags {
 }
 
 // resolve loads config and applies the override flags (empty flag = keep config value).
-func (o *overrideFlags) resolve() (config.Config, error) {
-	cfg, err := config.Load(o.configPath)
+// When --config is omitted it auto-discovers a config file from the default locations
+// (see config.Discover); if none is found it falls back to built-in defaults.
+func (o *overrideFlags) resolve(logger *slog.Logger) (config.Config, error) {
+	path := o.configPath
+	if path == "" {
+		path = config.Discover()
+	}
+	if path != "" {
+		logger.Info("using config file", "path", path)
+	} else {
+		logger.Info("no config file found; using built-in defaults", "searched", config.DefaultConfigPaths())
+	}
+	cfg, err := config.Load(path)
 	if err != nil {
 		return cfg, err
 	}
@@ -143,7 +154,7 @@ func runSync(ctx context.Context, args []string, logger *slog.Logger) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, err := o.resolve()
+	cfg, err := o.resolve(logger)
 	if err != nil {
 		return err
 	}
@@ -157,7 +168,7 @@ func runList(args []string, logger *slog.Logger) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, err := o.resolve()
+	cfg, err := o.resolve(logger)
 	if err != nil {
 		return err
 	}
@@ -188,7 +199,7 @@ func runEnrich(ctx context.Context, args []string, logger *slog.Logger) error {
 	if strings.TrimSpace(*word) == "" {
 		return fmt.Errorf("--word is required")
 	}
-	cfg, err := o.resolve()
+	cfg, err := o.resolve(logger)
 	if err != nil {
 		return err
 	}
@@ -214,7 +225,7 @@ func runInitAnki(ctx context.Context, args []string, logger *slog.Logger) error 
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, err := o.resolve()
+	cfg, err := o.resolve(logger)
 	if err != nil {
 		return err
 	}

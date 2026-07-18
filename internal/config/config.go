@@ -6,6 +6,8 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -105,6 +107,27 @@ func Defaults() Config {
 			LowConfidenceReviewTag: 0.6,
 		},
 	}
+}
+
+// DefaultConfigPaths lists the locations Discover searches, in priority order:
+//  1. ./config.toml (the current working directory)
+//  2. <user config dir>/koanki/config.toml (e.g. ~/.config/koanki/config.toml on Linux)
+func DefaultConfigPaths() []string {
+	paths := []string{"config.toml"}
+	if dir, err := os.UserConfigDir(); err == nil {
+		paths = append(paths, filepath.Join(dir, "koanki", "config.toml"))
+	}
+	return paths
+}
+
+// Discover returns the first existing default config path, or "" if none exist.
+func Discover() string {
+	for _, p := range DefaultConfigPaths() {
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			return p
+		}
+	}
+	return ""
 }
 
 // Load starts from Defaults(), decodes the TOML at path over it (when path != ""),

@@ -1,6 +1,14 @@
 # koanki configuration. Copy to config.toml and edit. Every value is optional — the
 # built-in defaults (shown here) apply when a key or the whole file is omitted. Flags
 # override the file, which overrides the defaults.
+#
+# koanki auto-discovers this file (no --config needed) from, in order:
+#   1. ./config.toml                      (the directory you run koanki from)
+#   2. ~/.config/koanki/config.toml       (a fixed, machine-wide location)
+# Pass --config PATH to point at a specific file instead.
+#
+# NOTE: relative paths below (db_path, state.db_path) resolve against your CURRENT
+# working directory. If you'll run koanki from anywhere, use ABSOLUTE paths here.
 
 [input]
 # Path to an already-synced copy of the KOReader vocabulary DB (read-only).
