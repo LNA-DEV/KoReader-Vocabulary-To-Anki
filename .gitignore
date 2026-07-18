@@ -27,6 +27,15 @@ go.work.sum
 # env file
 .env
 
+# Built binary
+/koanki
+
+# Local state DB + working config (the committed fixture under testdata/ is force-added)
+koanki-state.db
+/config.toml
+
 # Editor/IDE
 # .idea/
 # .vscode/
+
+.inbox/**

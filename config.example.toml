@@ -1,0 +1,53 @@
+# koanki configuration. Copy to config.toml and edit. Every value is optional — the
+# built-in defaults (shown here) apply when a key or the whole file is omitted. Flags
+# override the file, which overrides the defaults.
+
+[input]
+# Path to an already-synced copy of the KOReader vocabulary DB (read-only).
+db_path          = "./.inbox/vocabulary_builder.sqlite3"
+copy_before_read = true   # copy to a temp file before opening, to avoid lock contention
+
+[state]
+db_path = "./koanki-state.db"   # local record of processed words (created automatically)
+
+[ollama]
+base_url        = "http://localhost:11434"
+model           = "gemma3:27b"   # any pulled model; alt: "qwen3:32b" (reasoning auto-disabled)
+keep_alive      = "30m"          # keep the model resident across the batch
+timeout_seconds = 120
+temperature     = 0.2
+max_retries     = 3
+
+[anki]
+url             = "http://localhost:8765"   # AnkiConnect add-on endpoint
+note_type       = "KOReader Vocab"
+tags            = ["koreader"]
+allow_duplicate = false
+
+# Deck routing by SOURCE language. Anki uses "::" as its subdeck separator.
+[anki.decks]
+route_by_language = true
+default  = "KOReader"                             # used when route_by_language = false
+template = "{language_name}::KOReader Vocabulary" # for languages not in [anki.decks.map]
+fallback = "KOReader::Uncategorized"              # used when source language is unknown
+
+# Point specific source languages at your OWN existing decks (exact paths, verbatim).
+# Missing parent decks are created automatically without disturbing an existing parent.
+[anki.decks.map]
+en = "English::KOReader Vocabulary"
+# sv = "Svenska::KOReader Vocabulary"
+# de = "Deutsch::KOReader Vocabulary"
+
+[target]
+# Translation target. SHIPPED DEFAULT: English (monolingual — English word to an
+# in-context English definition + synonyms).
+language = "en"
+name     = "English"   # injected into the prompt; auto-derived from `language` if blank
+# For English → German cards instead, set:  language = "de"   name = "German"
+# (or run one-off:  koanki sync --target de)
+
+[features]
+ipa                       = false
+context_translation       = false
+alternatives              = true   # include synonyms / alternate senses
+low_confidence_review_tag = 0.6    # tag notes below this confidence "review"
