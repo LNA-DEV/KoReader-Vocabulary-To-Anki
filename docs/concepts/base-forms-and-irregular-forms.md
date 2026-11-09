@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Agreed — all open questions decided (§12). Phase 1 implemented. |
+| **Status** | Agreed — all open questions decided (§12). Phases 1 and 2 implemented. |
 | **Date** | 2026-11-09 |
 | **Touches** | `internal/ollama`, `internal/model`, `internal/anki`, `internal/state`, `internal/pipeline`, `internal/config` |
 
@@ -285,7 +285,9 @@ flagged as irregular or not, and the code decides by policy what to show (§5.4)
 ### 5.2 Slots
 
 A closed set of slot keys (schema `enum`) keeps labels consistent across cards. The displayed
-labels come from a small table in code, in English for every target language (Q7).
+labels come from a small table in code, in English for every target language (Q7). `gender`
+has no label on the card — the article alone (*der*) is clear. Forms are always shown in the
+order of this table, whatever order the model returns them in.
 
 | Slot | Meaning | Examples |
 |---|---|---|
@@ -348,7 +350,8 @@ checked with both `gemma3` and `qwen3` in the evaluation (§10).
 
 After the LLM call, before the note is built:
 
-- Drop items with an empty form; trim; keep only the first item per slot; at most 6 items.
+- Drop items with an empty form; trim; keep only the first item per slot (per label for
+  `other`); an unknown slot becomes `other` with the slot name as label; at most 6 items.
 - Variants go into one item: `"dreamed / dreamt"`.
 - **English plausibility check (downgrade only):** if a form flagged `irregular` is exactly
   what the simple regular rules produce (`+ed`, `+s`/`+es`, `+er`/`+est`, with e-drop,
@@ -366,6 +369,9 @@ Display policy (`features.forms`):
   language in `features.forms_always` (defaults: German and Swedish nouns → `gender`,
   `plural`).
 - `always` — show the principal parts of every word that has them.
+
+Entries in `[features.forms_always]` in the config file are added to the built-in defaults
+(that is how the TOML loader merges maps); a language is turned off with an empty list.
 
 ### 5.5 Rendering
 
@@ -542,8 +548,8 @@ Sense-check pairs (same lemma, two sentences, expected same/different): *bank* (
    note type v2 with all its fields (`SeenAs` and `Forms` stay empty until Phase 2, so the note
    type changes only once), HTML escaping, lemma index, merge, sense check, note-type and state
    migration, dry-run output.
-2. **Phase 2 — forms:** schema and prompt fields, validation, English check, display policy,
-   rendering, `SeenAs`, configuration.
+2. **Phase 2 — forms (implemented):** schema and prompt fields, validation, English check,
+   display policy, rendering, `SeenAs`, configuration.
 3. **Phase 3 — optional:** forms card, `backfill-forms`, `duplicates`, `reindex`.
 
 Each phase is its own pull request and can ship on its own.

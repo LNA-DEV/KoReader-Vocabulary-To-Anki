@@ -4,7 +4,7 @@
 
 - Never commit or push without the owner's explicit permission. Make the changes in the
   working tree, summarize what changed, and ask. Permission covers only the commit it was
-  given for; ask again for the next one.
+  given for; ask again for the next one. Permission to commit includes pushing that commit.
 - Commit only under the repository owner's identity: `Lukas Nagel <github@lna-dev.net>`.
   If `git config user.name` / `user.email` show anything else (e.g. `Claude <noreply@anthropic.com>`
   in cloud sessions), set the repo-local identity before committing:

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/config"
+	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/forms"
 	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/lemma"
 	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/model"
 )
@@ -13,8 +14,8 @@ import (
 // Fields is the ordered field list of the KOReader Vocab note type (v2). Lemma is first,
 // so Anki's duplicate check works on the base form. Field names are target-language-
 // neutral (Translation holds a definition in monolingual mode, a translation otherwise;
-// TargetLang records which language that is). SeenAs and Forms are filled by a later
-// phase; they exist now so the note type changes only once.
+// TargetLang records which language that is). SeenAs and Forms describe the seen form
+// and the lemma's principal parts in the source language.
 var Fields = []string{
 	"Lemma", "Word", "SeenAs", "Forms", "Translation", "OtherSenses", "Context", "Examples",
 	"ContextTranslation", "Book", "SourceLang", "TargetLang", "IPA", "POS", "Extra",
@@ -48,8 +49,8 @@ func BuildNote(cfg config.Config, entry model.VocabEntry, enr model.Enrichment, 
 	fields := map[string]string{
 		"Lemma":              esc(lemma.Clean(enr.Lemma)),
 		"Word":               esc(entry.Surface),
-		"SeenAs":             "",
-		"Forms":              "",
+		"SeenAs":             seenAs(cfg, entry, enr),
+		"Forms":              renderForms(cfg, entry, enr),
 		"Translation":        esc(enr.Translation),
 		"OtherSenses":        "",
 		"Context":            HighlightedContext(entry),
@@ -81,6 +82,25 @@ func BuildNote(cfg config.Config, entry model.VocabEntry, enr model.Enrichment, 
 			DuplicateScope: "deck",
 		},
 	}
+}
+
+// seenAs returns the escaped SeenAs value, or "" when disabled, missing, or when the
+// seen form is the lemma itself.
+func seenAs(cfg config.Config, entry model.VocabEntry, enr model.Enrichment) string {
+	if !cfg.Features.SeenAs || enr.SeenAs == nil {
+		return ""
+	}
+	s := strings.TrimSpace(*enr.SeenAs)
+	if s == "" || lemma.Fold(entry.Surface) == lemma.Fold(enr.Lemma) {
+		return ""
+	}
+	return html.EscapeString(s)
+}
+
+// renderForms applies the display policy to the lemma's forms and renders them.
+func renderForms(cfg config.Config, entry model.VocabEntry, enr model.Enrichment) string {
+	always := cfg.Features.FormsAlways[strings.ToLower(strings.TrimSpace(enr.SourceLanguage))]
+	return forms.Render(forms.Select(cfg.Features.Forms, always, enr.LemmaForms), entry.Surface)
 }
 
 // deref returns the pointed-to string when enabled and non-nil, else "".

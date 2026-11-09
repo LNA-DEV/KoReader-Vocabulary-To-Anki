@@ -86,3 +86,39 @@ func TestSchemaRestrictsPartOfSpeech(t *testing.T) {
 		t.Errorf("part_of_speech enum = %v, want %v", enum, lemma.POSClasses)
 	}
 }
+
+func TestSystemPromptFormsInstructions(t *testing.T) {
+	p := systemPrompt("German")
+	for _, want := range []string{"lemma_forms", "SOURCE language", "past_participle", "dreamed / dreamt", "seen_as", "in a few German words"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("system prompt missing %q", want)
+		}
+	}
+	for _, slot := range model.FormSlots {
+		if !strings.Contains(p, `"`+slot+`"`) {
+			t.Errorf("system prompt does not explain slot %q", slot)
+		}
+	}
+}
+
+func TestSchemaRestrictsFormSlots(t *testing.T) {
+	var s struct {
+		Properties struct {
+			LemmaForms struct {
+				Items struct {
+					Properties struct {
+						Slot struct {
+							Enum []string `json:"enum"`
+						} `json:"slot"`
+					} `json:"properties"`
+				} `json:"items"`
+			} `json:"lemma_forms"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(schemaJSON, &s); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Properties.LemmaForms.Items.Properties.Slot.Enum; !slices.Equal(got, model.FormSlots) {
+		t.Errorf("lemma_forms slot enum = %v, want %v", got, model.FormSlots)
+	}
+}

@@ -1,6 +1,11 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"slices"
+	"testing"
+)
 
 func TestNormalizeLanguageCode(t *testing.T) {
 	cases := map[string]string{
@@ -61,6 +66,19 @@ func TestValidateOnKnownLemma(t *testing.T) {
 	}
 }
 
+func TestValidateForms(t *testing.T) {
+	c := Defaults()
+	c.Features.Forms = "sometimes"
+	if err := c.Validate(); err == nil {
+		t.Error("expected error for unknown forms policy")
+	}
+	c = Defaults()
+	c.Features.FormsAlways = map[string][]string{"de": {"gender", "Plural"}}
+	if err := c.Validate(); err == nil {
+		t.Error("expected error for unknown forms_always slot")
+	}
+}
+
 func TestExampleConfigLoads(t *testing.T) {
 	c, err := Load("../../config.example.toml")
 	if err != nil {
@@ -72,7 +90,31 @@ func TestExampleConfigLoads(t *testing.T) {
 	d := Defaults()
 	if c.Features.OnKnownLemma != d.Features.OnKnownLemma || c.Features.SenseCheck != d.Features.SenseCheck ||
 		c.Features.SenseCheckMinConfidence != d.Features.SenseCheckMinConfidence ||
-		c.Features.MaxOtherSenses != d.Features.MaxOtherSenses {
+		c.Features.MaxOtherSenses != d.Features.MaxOtherSenses ||
+		c.Features.SeenAs != d.Features.SeenAs || c.Features.Forms != d.Features.Forms ||
+		!slices.Equal(c.Features.FormsAlways["de"], d.Features.FormsAlways["de"]) ||
+		!slices.Equal(c.Features.FormsAlways["sv"], d.Features.FormsAlways["sv"]) {
 		t.Errorf("example features %+v differ from defaults %+v", c.Features, d.Features)
+	}
+}
+
+func TestFormsAlwaysMergesWithDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[features.forms_always]\nde = []\nfr = [\"gender\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fa := c.Features.FormsAlways
+	if len(fa["de"]) != 0 {
+		t.Errorf("de = %v, want turned off by []", fa["de"])
+	}
+	if !slices.Equal(fa["sv"], []string{"gender", "plural"}) {
+		t.Errorf("sv = %v, want the default to survive", fa["sv"])
+	}
+	if !slices.Equal(fa["fr"], []string{"gender"}) {
+		t.Errorf("fr = %v, want the added entry", fa["fr"])
 	}
 }

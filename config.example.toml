@@ -68,3 +68,14 @@ on_known_lemma             = "merge"
 sense_check                = true  # on merge: second LLM call to detect a new meaning
 sense_check_min_confidence = 0.7   # below this a new meaning is not added; note tagged "review"
 max_other_senses           = 3     # meanings kept in the OtherSenses field
+
+# Forms of the lemma in the SOURCE language (principal parts: go – went – gone, mouse – mice).
+seen_as = true          # fill SeenAs on the card ("beheld = past tense")
+forms   = "irregular"   # off | irregular (show them when one is irregular) | always
+
+# Slots shown even when regular, per source language. Slots: gender, plural, genitive,
+# present_3sg, past, past_participle, supine, comparative, superlative, other.
+# These entries are added to the built-in defaults below; set a language to [] to turn it off.
+[features.forms_always]
+de = ["gender", "plural"]
+sv = ["gender", "plural"]

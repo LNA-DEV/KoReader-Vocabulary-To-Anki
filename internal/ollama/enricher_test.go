@@ -162,3 +162,19 @@ func TestCheckSenseRetriesWhenSenseMissing(t *testing.T) {
 		t.Errorf("result %+v after %d calls", res, *calls)
 	}
 }
+
+func TestEnrichDecodesForms(t *testing.T) {
+	srv, _ := chatServer(t, `{"source_language":"en","surface_form":"beheld","seen_as":"past tense","lemma":"behold",`+
+		`"part_of_speech":"verb","translation":"to see","confidence":0.9,"lemma_forms":[`+
+		`{"slot":"past","form":"beheld","irregular":true},{"slot":"past_participle","form":"beheld","irregular":true}]}`)
+	enr, err := testClient(srv.URL).Enrich(context.Background(), model.VocabEntry{Word: "beheld", Surface: "beheld"}, "English")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enr.SeenAs == nil || *enr.SeenAs != "past tense" {
+		t.Errorf("SeenAs = %v", enr.SeenAs)
+	}
+	if len(enr.LemmaForms) != 2 || enr.LemmaForms[0].Slot != "past" || !enr.LemmaForms[1].Irregular {
+		t.Errorf("LemmaForms = %+v", enr.LemmaForms)
+	}
+}

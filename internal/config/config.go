@@ -8,9 +8,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/forms"
+	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/model"
 )
 
 // Config is the fully-resolved configuration used by every command.
@@ -76,6 +80,15 @@ type FeaturesConfig struct {
 	SenseCheck              bool    `toml:"sense_check"`
 	SenseCheckMinConfidence float64 `toml:"sense_check_min_confidence"`
 	MaxOtherSenses          int     `toml:"max_other_senses"`
+
+	// SeenAs fills the SeenAs field ("beheld = past tense").
+	SeenAs bool `toml:"seen_as"`
+	// Forms is the display policy for the lemma's principal parts: "off", "irregular"
+	// (show them when one is irregular) or "always".
+	Forms string `toml:"forms"`
+	// FormsAlways lists, per source language, slots shown even when regular (e.g. German
+	// noun gender and plural).
+	FormsAlways map[string][]string `toml:"forms_always"`
 }
 
 // Values of FeaturesConfig.OnKnownLemma.
@@ -125,6 +138,12 @@ func Defaults() Config {
 			SenseCheck:              true,
 			SenseCheckMinConfidence: 0.7,
 			MaxOtherSenses:          3,
+			SeenAs:                  true,
+			Forms:                   forms.PolicyIrregular,
+			FormsAlways: map[string][]string{
+				"de": {"gender", "plural"},
+				"sv": {"gender", "plural"},
+			},
 		},
 	}
 }
@@ -203,6 +222,20 @@ func (c Config) Validate() error {
 	}
 	if c.Features.MaxOtherSenses < 0 {
 		return fmt.Errorf("features.max_other_senses must not be negative, got %d", c.Features.MaxOtherSenses)
+	}
+	switch c.Features.Forms {
+	case forms.PolicyOff, forms.PolicyIrregular, forms.PolicyAlways:
+	default:
+		return fmt.Errorf("features.forms must be %q, %q or %q, got %q",
+			forms.PolicyOff, forms.PolicyIrregular, forms.PolicyAlways, c.Features.Forms)
+	}
+	for lang, slots := range c.Features.FormsAlways {
+		for _, slot := range slots {
+			if !slices.Contains(model.FormSlots, slot) {
+				return fmt.Errorf("features.forms_always.%s: unknown slot %q (known: %s)",
+					lang, slot, strings.Join(model.FormSlots, ", "))
+			}
+		}
 	}
 	return nil
 }

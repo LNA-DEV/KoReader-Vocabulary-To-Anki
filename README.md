@@ -9,7 +9,8 @@ For each *new* word it infers the source language, lemmatizes, and — using the
 the word appeared in to disambiguate — produces an in-context entry, then pushes a
 **bidirectional** note (recognition + production cards) into Anki. There is **one note per
 base form**: looking up *ran* and later *running* gives one note for *run*, and the second
-sentence is added to it as an example. It's safe to re-run: only words not seen before are
+sentence is added to it as an example. Irregular forms of the word (*go – went – gone*,
+*mouse – mice*) are shown on the card. It's safe to re-run: only words not seen before are
 processed.
 
 - **Default:** English → English (monolingual definitions + synonyms).
@@ -20,7 +21,7 @@ processed.
 
 ```
 vocabulary_builder.sqlite3 → [read, read-only] → [delta vs state.db]
-  → [Ollama: one JSON object per new word, incl. lemma + part of speech]
+  → [Ollama: one JSON object per new word, incl. lemma, part of speech and its forms]
   → [Anki: lemma already has a note? merge the sentence into it : add a new note]
   → [record processed words + lemma index]
 ```
@@ -97,9 +98,10 @@ note studies both directions:
 
 - **Recognition (word → meaning):** front shows the base form (lemma) large and the sentence
   with the form you met in **bold**; back shows the definition/translation, other meanings,
-  part of speech, synonyms, further example sentences and the book.
-- **Production (meaning → word):** front shows the meaning; back recalls the base form and
-  the sentence.
+  part of speech, what the seen form is ("beheld = past tense"), the word's forms, synonyms,
+  further example sentences and the book.
+- **Production (meaning → word):** front shows the meaning; back recalls the base form, its
+  forms and the sentence.
 
 The first field is `Lemma`, so Anki's own duplicate check works on the base form. Notes are
 routed into a per-source-language deck (see `[anki.decks]` in the config) and tagged
@@ -117,6 +119,29 @@ a note (`features.on_known_lemma = "merge"`, the default):
   meaning there (*bank* of a river vs. *bank* for money). A new meaning goes into the
   **OtherSenses** field on the back of the recognition card; an uncertain one only tags the
   note `review`.
+
+### Irregular forms
+
+The model also returns the word's principal parts in the **source** language (English verbs:
+past and past participle; German nouns: gender, plural, genitive; …), each marked irregular
+or not. With `features.forms = "irregular"` (default) a card shows them only when at least
+one form is irregular, with the irregular ones highlighted and the form you met in bold:
+
+```
+behold      past beheld · past participle beheld
+mouse       plural mice
+```
+
+Some forms are worth showing even when regular, because a learner can't predict them —
+German and Swedish noun gender and plural are on by default (`[features.forms_always]`):
+
+```
+Hund        der · plural die Hunde
+```
+
+For English, a form the model marks irregular although the regular rules produce it
+(*walked*) is corrected before the card is built. `forms = "always"` shows the forms of every
+word, `"off"` none.
 
 ### Upgrading from an earlier version
 

@@ -39,6 +39,22 @@ The flashcard is about the lemma: the citation form that a learner's dictionary 
 - Proper nouns and abbreviations: unchanged.
 "part_of_speech" is the part of speech of the lemma (a phrasal verb is a "verb").
 
+In "lemma_forms", list the principal parts that a learner's dictionary of the SOURCE language gives for the `+
+		`lemma's part of speech. They describe the source word, not the translation. Use these slots: "gender" `+
+		`(the definite article: German der/die/das, Swedish en/ett), "plural" (German with article: "die Hunde"), `+
+		`"genitive" (German with article: "des Hundes"), "present_3sg" (only when the stem changes: German `+
+		`"läuft"), "past" (simple past/preterite), "past_participle" (German with auxiliary: "ist gegangen"), `+
+		`"supine" (Swedish: "sprungit"), "comparative", "superlative", and "other" with a short English "label". `+
+		`For example: English verbs past and past_participle; English nouns plural; English adjectives `+
+		`comparative and superlative; German nouns gender, plural and genitive; German verbs present_3sg (if the `+
+		`stem changes), past and past_participle; Swedish nouns gender and plural; Swedish verbs past and supine. `+
+		`Write separable and phrasal verbs with their particle ("fängt an", "fing an", "hat angefangen"; `+
+		`"gave up", "given up"). Put variants into one form ("dreamed / dreamt"). Set "irregular" to true only `+
+		`if the language's regular rules would not produce the form from the lemma. Leave "lemma_forms" empty `+
+		`if the word class has no principal parts (adverbs, prepositions, …).
+In "seen_as", describe in a few %[1]s words the grammatical form of the surface form in the sentence `+
+		`("past tense", "plural"), or null if the surface form is the lemma.
+
 Write "translation" for the lemma, not for the inflected surface form. If the word is already in %[1]s, `+
 		`put a concise in-context definition in "translation" and near-synonyms in "translation_alternatives"; `+
 		`otherwise put the context-disambiguated %[1]s translation in "translation". If %[1]s marks grammatical `+

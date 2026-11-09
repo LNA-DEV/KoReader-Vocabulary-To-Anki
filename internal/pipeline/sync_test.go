@@ -263,11 +263,24 @@ func fakeOllama(t *testing.T, enrich func(surface, sentence string) string, sens
 }
 
 func enr(lemma, pos, translation string) string {
-	b, _ := json.Marshal(map[string]any{
+	return enrWith(lemma, pos, translation, nil)
+}
+
+// enrWith builds an enrichment reply; extra overrides or adds fields.
+func enrWith(lemma, pos, translation string, extra map[string]any) string {
+	m := map[string]any{
 		"source_language": "en", "lemma": lemma, "part_of_speech": pos,
 		"translation": translation, "confidence": 0.9,
-	})
+	}
+	for k, v := range extra {
+		m[k] = v
+	}
+	b, _ := json.Marshal(m)
 	return string(b)
+}
+
+func form(slot, value string, irregular bool) map[string]any {
+	return map[string]any{"slot": slot, "form": value, "irregular": irregular}
 }
 
 func defaultEnrich(surface, sentence string) string {
@@ -285,7 +298,25 @@ func defaultEnrich(surface, sentence string) string {
 	case surface == "gave" && strings.Contains(sentence, "gave up"):
 		return enr("give up", "verb", "to stop trying")
 	case surface == "beheld":
-		return enr("behold", "verb", "to see")
+		return enrWith("behold", "verb", "to see", map[string]any{
+			"seen_as":     "past tense",
+			"lemma_forms": []any{form("past", "beheld", true), form("past_participle", "beheld", true)},
+		})
+	case surface == "gouging":
+		return enrWith("gouge", "verb", "to dig out", map[string]any{
+			"seen_as":     "present participle",
+			"lemma_forms": []any{form("past", "gouged", false), form("past_participle", "gouged", false)},
+		})
+	case surface == "walked":
+		// The model wrongly flags a regular form; the English check must correct it.
+		return enrWith("walk", "verb", "to move on foot", map[string]any{
+			"lemma_forms": []any{form("past", "walked", true), form("past_participle", "walked", true)},
+		})
+	case surface == "Hunde":
+		return enrWith("Hund", "noun", "dog", map[string]any{
+			"source_language": "de", "seen_as": "plural",
+			"lemma_forms": []any{form("gender", "der", false), form("plural", "die Hunde", false), form("genitive", "des Hundes", false)},
+		})
 	}
 	return enr(surface, "noun", "something")
 }
@@ -465,6 +496,12 @@ func TestSyncAdoptsNoteFromBeforeTheIndex(t *testing.T) {
 	if !strings.Contains(note.fields["Examples"], "She <b>beheld</b> the ruin before her.") {
 		t.Errorf("row should be merged into the existing note, Examples = %q", note.fields["Examples"])
 	}
+	if !strings.Contains(note.fields["Forms"], "past participle") {
+		t.Errorf("empty Forms of the old note should be filled on merge, Forms = %q", note.fields["Forms"])
+	}
+	if note.fields["SeenAs"] != "" {
+		t.Errorf("SeenAs describes the first sentence and must not be filled on merge, got %q", note.fields["SeenAs"])
+	}
 	st, _ := state.Open(h.runner.Cfg.State.DBPath)
 	defer st.Close()
 	if _, ok, _ := st.LookupLemma("en|behold|verb"); !ok {
@@ -564,5 +601,37 @@ func TestSyncDryRunDoesNotTouchAnki(t *testing.T) {
 	defer st.Close()
 	if n, _ := st.Count(); n != 0 {
 		t.Errorf("dry run must not record state, got %d rows", n)
+	}
+}
+
+func TestSyncForms(t *testing.T) {
+	h := newHarness(t)
+	writeVocabDB(t, h.vocabPath,
+		row{word: "beheld", prev: "She", next: "the ruin before her."},
+		row{word: "gouge(1)", highlight: "gouging", prev: "a wall of white bone,", next: "deep."},
+		row{word: "walked", prev: "He", next: "home."},
+		row{word: "Hunde", prev: "Die", next: "bellen laut."},
+	)
+	h.sync(t)
+
+	behold := onlyNote(t, h, "behold")
+	if behold.fields["SeenAs"] != "past tense" {
+		t.Errorf("behold SeenAs = %q", behold.fields["SeenAs"])
+	}
+	if !strings.Contains(behold.fields["Forms"], `<span class="fv irr"><b>beheld</b></span>`) {
+		t.Errorf("irregular forms should be shown with the seen form bold, Forms = %q", behold.fields["Forms"])
+	}
+	if f := onlyNote(t, h, "gouge").fields["Forms"]; f != "" {
+		t.Errorf("regular English verb should show no forms, Forms = %q", f)
+	}
+	if f := onlyNote(t, h, "walk").fields["Forms"]; f != "" {
+		t.Errorf("wrongly flagged regular forms should be corrected and hidden, Forms = %q", f)
+	}
+	hund := onlyNote(t, h, "Hund")
+	if f := hund.fields["Forms"]; !strings.Contains(f, `<span class="fv">der</span>`) || !strings.Contains(f, "<b>die Hunde</b>") || strings.Contains(f, "des Hundes") {
+		t.Errorf("German noun should show gender + plural only, Forms = %q", f)
+	}
+	if hund.deck != "German::KOReader Vocabulary" {
+		t.Errorf("German note deck = %q", hund.deck)
 	}
 }

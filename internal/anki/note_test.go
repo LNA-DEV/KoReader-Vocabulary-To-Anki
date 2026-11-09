@@ -219,3 +219,57 @@ func TestAppendSense(t *testing.T) {
 		t.Errorf("sense must be escaped, got %q", got)
 	}
 }
+
+func TestBuildNoteSeenAsAndForms(t *testing.T) {
+	cfg := baseConfig()
+	seen := "past tense"
+	entry := model.VocabEntry{Surface: "beheld", Context: "She beheld it.", ContextBefore: "She", ContextAfter: "it."}
+	enr := model.Enrichment{
+		SourceLanguage: "en", Lemma: "behold", PartOfSpeech: "verb", Translation: "to see", Confidence: 0.9,
+		SeenAs: &seen,
+		LemmaForms: []model.LemmaForm{
+			{Slot: "past", Form: "beheld", Irregular: true},
+			{Slot: "past_participle", Form: "beheld", Irregular: true},
+		},
+	}
+	n := BuildNote(cfg, entry, enr, false)
+	if n.Fields["SeenAs"] != "past tense" {
+		t.Errorf("SeenAs = %q", n.Fields["SeenAs"])
+	}
+	if !strings.Contains(n.Fields["Forms"], `<span class="fv irr"><b>beheld</b></span>`) {
+		t.Errorf("Forms = %q", n.Fields["Forms"])
+	}
+
+	cfg.Features.Forms = "off"
+	cfg.Features.SeenAs = false
+	n = BuildNote(cfg, entry, enr, false)
+	if n.Fields["Forms"] != "" || n.Fields["SeenAs"] != "" {
+		t.Errorf("disabled features must leave fields empty: %q / %q", n.Fields["Forms"], n.Fields["SeenAs"])
+	}
+}
+
+func TestBuildNoteSeenAsEmptyForLemma(t *testing.T) {
+	base := "base form"
+	enr := model.Enrichment{SourceLanguage: "en", Lemma: "nook", Translation: "x", SeenAs: &base}
+	if got := BuildNote(baseConfig(), model.VocabEntry{Surface: "Nook"}, enr, false).Fields["SeenAs"]; got != "" {
+		t.Errorf("SeenAs should be empty when the seen form is the lemma, got %q", got)
+	}
+}
+
+func TestBuildNoteFormsAlwaysPerLanguage(t *testing.T) {
+	cfg := baseConfig() // defaults: de/sv nouns always show gender + plural
+	enr := model.Enrichment{
+		SourceLanguage: "de", Lemma: "Hund", PartOfSpeech: "noun", Translation: "dog",
+		LemmaForms: []model.LemmaForm{
+			{Slot: "gender", Form: "der"}, {Slot: "plural", Form: "die Hunde"}, {Slot: "genitive", Form: "des Hundes"},
+		},
+	}
+	got := BuildNote(cfg, model.VocabEntry{Surface: "Hunde"}, enr, false).Fields["Forms"]
+	if !strings.Contains(got, "der") || !strings.Contains(got, "die Hunde") || strings.Contains(got, "des Hundes") {
+		t.Errorf("German noun Forms = %q", got)
+	}
+	enr.SourceLanguage = "en" // same regular forms, but no forms_always for English
+	if got := BuildNote(cfg, model.VocabEntry{Surface: "Hunde"}, enr, false).Fields["Forms"]; got != "" {
+		t.Errorf("regular forms without forms_always should be hidden, got %q", got)
+	}
+}

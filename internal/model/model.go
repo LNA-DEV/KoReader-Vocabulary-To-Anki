@@ -44,6 +44,30 @@ type Enrichment struct {
 	ContextTranslation      *string  `json:"context_translation"`      // optional whole-sentence rendering
 	IPA                     *string  `json:"ipa"`                      // optional pronunciation
 	Confidence              float64  `json:"confidence"`               // 0..1 self-assessed certainty
+
+	// SeenAs briefly describes the grammatical form of the surface form ("past tense"),
+	// null when the surface form is the lemma.
+	SeenAs *string `json:"seen_as"`
+	// LemmaForms are the principal parts of the lemma in the SOURCE language (not the
+	// translation), each flagged irregular or not. Empty when the word class has none.
+	LemmaForms []LemmaForm `json:"lemma_forms"`
+}
+
+// LemmaForm is one principal part of a lemma, e.g. {Slot: "past", Form: "went"}.
+type LemmaForm struct {
+	Slot      string  `json:"slot"`      // one of FormSlots
+	Label     *string `json:"label"`     // free-text label, only for Slot == "other"
+	Form      string  `json:"form"`      // the form; variants as "dreamed / dreamt"
+	Irregular bool    `json:"irregular"` // not produced by the language's regular rules
+}
+
+// FormSlots is the closed set of principal-part slots (LLM schema enum), in the order
+// they are shown on a card.
+var FormSlots = []string{
+	"gender", "plural", "genitive",
+	"present_3sg", "past", "past_participle", "supine",
+	"comparative", "superlative",
+	"other",
 }
 
 // Validate checks that the model returned a usable enrichment. It is intentionally

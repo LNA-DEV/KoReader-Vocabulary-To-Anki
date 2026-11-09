@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/lemma"
+	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/model"
 )
 
 // schemaJSON is the JSON Schema passed to Ollama's structured-output `format` field so
@@ -25,6 +26,20 @@ var schemaJSON = mustSchema(map[string]any{
 		"context_translation":      nullableString(),
 		"ipa":                      nullableString(),
 		"confidence":               map[string]any{"type": "number"},
+		"seen_as":                  nullableString(),
+		"lemma_forms": map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"slot":      map[string]any{"type": "string", "enum": model.FormSlots},
+					"label":     nullableString(),
+					"form":      map[string]any{"type": "string"},
+					"irregular": map[string]any{"type": "boolean"},
+				},
+				"required": []string{"slot", "form", "irregular"},
+			},
+		},
 	},
 	"required": []string{"source_language", "lemma", "part_of_speech", "translation", "confidence"},
 })

@@ -13,6 +13,7 @@ import (
 
 	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/anki"
 	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/config"
+	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/forms"
 	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/koreader"
 	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/lemma"
 	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/model"
@@ -95,20 +96,38 @@ func (r *Runner) EnrichOne(ctx context.Context, entry model.VocabEntry) (model.E
 	if err != nil {
 		return model.Enrichment{}, err
 	}
-	postProcess(entry, &enr)
+	r.logDowngrades(entry, postProcess(entry, &enr))
 	return enr, nil
 }
 
 // postProcess normalizes model output that varies run to run: it maps the source
 // language to an ISO code (the model sometimes returns "English" instead of "en"),
 // tidies the lemma, maps the part of speech to its class (both feed the note key) and
-// backfills the surface form the model occasionally leaves blank.
-func postProcess(entry model.VocabEntry, enr *model.Enrichment) {
+// backfills the surface form the model occasionally leaves blank. It also cleans up the
+// lemma's forms and, for English, clears irregular flags on regular forms; it returns
+// the forms it downgraded.
+func postProcess(entry model.VocabEntry, enr *model.Enrichment) []string {
 	enr.SourceLanguage = config.NormalizeLanguageCode(enr.SourceLanguage)
 	enr.Lemma = lemma.Clean(enr.Lemma)
 	enr.PartOfSpeech = lemma.NormalizePOS(enr.PartOfSpeech)
 	if strings.TrimSpace(enr.SurfaceForm) == "" {
 		enr.SurfaceForm = entry.Surface
+	}
+	if enr.SeenAs != nil && strings.TrimSpace(*enr.SeenAs) == "" {
+		enr.SeenAs = nil
+	}
+	enr.LemmaForms = forms.Normalize(enr.LemmaForms)
+	var downgraded []string
+	if enr.SourceLanguage == "en" {
+		enr.LemmaForms, downgraded = forms.DowngradeEnglish(enr.Lemma, enr.LemmaForms)
+	}
+	return downgraded
+}
+
+// logDowngrades reports forms the English check found to be regular after all.
+func (r *Runner) logDowngrades(entry model.VocabEntry, downgraded []string) {
+	if len(downgraded) > 0 {
+		r.Logger.Info("model marked regular English forms as irregular; corrected", "word", entry.Word, "forms", downgraded)
 	}
 }
 
@@ -204,7 +223,7 @@ func (r *Runner) Sync(ctx context.Context, opts SyncOptions) error {
 			skipped++
 			continue
 		}
-		postProcess(entry, &enr)
+		r.logDowngrades(entry, postProcess(entry, &enr))
 		enriched++
 		key := lemma.Key(enr.SourceLanguage, enr.Lemma, enr.PartOfSpeech)
 		lowConf := enr.Confidence < r.Cfg.Features.LowConfidenceReviewTag
