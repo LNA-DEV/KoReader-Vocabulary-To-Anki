@@ -9,14 +9,16 @@ import (
 
 // VocabEntry is one row from the KOReader vocabulary DB after processing.
 type VocabEntry struct {
-	Word        string // raw PK from DB, may include a trailing "(N)" — the state key
-	WordClean   string // Word with a trailing "(N)" stripped — the base-form hint
-	Surface     string // COALESCE(NULLIF(highlight,''), WordClean) — form seen in the sentence
-	Context     string // reconstructed sentence around Surface ("" for Dictionary-lookup rows)
-	Book        string // book title ("" when title_id is null)
-	TitleID     int64  // 0 when null
-	CreatedAt   int64  // unix seconds (create_time)
-	ContentHash string // hash(Word|Surface|Context) — dedup / optional edit detection
+	Word          string // raw PK from DB, may include a trailing "(N)" — the state key
+	WordClean     string // Word with a trailing "(N)" stripped — the base-form hint
+	Surface       string // COALESCE(NULLIF(highlight,''), WordClean) — form seen in the sentence
+	Context       string // reconstructed sentence around Surface ("" for Dictionary-lookup rows)
+	ContextBefore string // trimmed text before Surface in Context (lets cards bold Surface exactly)
+	ContextAfter  string // trimmed text after Surface in Context
+	Book          string // book title ("" when title_id is null)
+	TitleID       int64  // 0 when null
+	CreatedAt     int64  // unix seconds (create_time)
+	ContentHash   string // hash(Word|Surface|Context) — dedup / optional edit detection
 }
 
 // HasContext reports whether the entry carries a usable sentence.

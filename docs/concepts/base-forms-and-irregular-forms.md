@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft for discussion |
+| **Status** | Agreed — all open questions decided (§12). Phase 1 implemented. |
 | **Date** | 2026-11-09 |
 | **Touches** | `internal/ollama`, `internal/model`, `internal/anki`, `internal/state`, `internal/pipeline`, `internal/config` |
 
@@ -58,7 +58,8 @@ Consequences:
 - **G3** Seeing a known lemma again never creates a note and never resets review scheduling;
   it adds the sentence as an example.
 - **G4** Cards show irregular (or otherwise unpredictable) forms of the lemma, configurable.
-- **G5** Stay offline and language-agnostic; no extra LLM call in the default path.
+- **G5** Stay offline and language-agnostic. New words cost one LLM call, as today; the only
+  extra call is the sense check when a known lemma shows up again (§4.5.1).
 - **G6** Existing users upgrade without losing review history or their template customizations.
 
 **Non-goals**
@@ -81,11 +82,12 @@ says "Return the dictionary base form as the lemma"; it gets explicit rules:
 | Adjective / adverb | Positive degree, uninflected. | *worse → bad*, *schönen → schön*, *större → stor* |
 | Participle used as adjective | Verb lemma, unless dictionaries list the adjective as a headword of its own. | *gouging → gouge*, but *tired → tired* |
 | Multi-word highlight | Citation form of the whole expression. | highlight *gave up → give up* |
+| Single word that belongs to a phrasal verb | Citation form of the whole phrasal verb, taken from the sentence; POS `verb`. | *gave* in "She gave up." → *give up*; *gave* in "She gave him a book." → *give* |
 | Proper noun, abbreviation | Unchanged. | |
 
-If only a single word is highlighted but the meaning is that of a phrasal verb (*gave* in
-"she gave up"), the lemma stays the single word *give* and the phrasal meaning goes into the
-translation. See Q4.
+The phrasal-verb rule follows the separable-verb rule: the sentence decides which word the
+learner actually met. *give* and *give up* therefore get separate notes (different keys).
+In the sentence only the highlighted word is bold; the particle is not marked.
 
 ### 4.2 Lemma key
 
@@ -118,10 +120,11 @@ Field layout (new or changed fields in bold):
 | 2 | Word | The form as seen in the book. Meaning unchanged; the name is kept so user templates that reference `{{Word}}` keep working. |
 | 3 | **SeenAs** | Short grammatical description of the seen form, e.g. "past tense" (Part B). |
 | 4 | **Forms** | Rendered key forms of the lemma, HTML (Part B). |
-| 5 | Translation | unchanged |
-| 6 | Context | First sentence the word was seen in; the seen form wrapped in `<b>`. |
-| 7 | **Examples** | Later sightings as an HTML list, appended on merge. |
-| 8… | ContextTranslation, Book, SourceLang, TargetLang, IPA, POS, Extra | unchanged |
+| 5 | Translation | Unchanged: the meaning in the first sentence. Later sightings never change it. |
+| 6 | **OtherSenses** | Further meanings found by the sense check (§4.5.1), HTML list. Shown only on the back of the recognition card. |
+| 7 | Context | First sentence the word was seen in; the seen form wrapped in `<b>`. |
+| 8 | **Examples** | Later sightings as an HTML list, appended on merge. |
+| 9… | ContextTranslation, Book, SourceLang, TargetLang, IPA, POS, Extra | unchanged |
 
 All field values are HTML-escaped before they are sent. Today they are not, so a sentence
 containing `<` or `&` renders incorrectly. The `<b>` around the seen form is added after
@@ -129,9 +132,10 @@ escaping.
 
 Templates v2:
 
-- **Recognition** — front: `Lemma` + `Context`. Back: `Translation`, `POS`, `SeenAs`, `Forms`,
-  synonyms (`Extra`), `Examples`, `Book`.
+- **Recognition** — front: `Lemma` + `Context`. Back: `Translation`, `OtherSenses`, `POS`,
+  `SeenAs`, `Forms`, synonyms (`Extra`), `Examples`, `Book`.
 - **Production** — front: `Translation` + `POS`. Back: `Lemma` + `Forms` + `Context`.
+  `OtherSenses` is deliberately left off the front, so one meaning asks for one word.
 
 ### 4.4 Pipeline flow
 
@@ -144,19 +148,22 @@ LLM enrich ──► lemma, pos, forms, translation, …   (one call, as today)
   ▼
 lemma_key = key(lang, lemma, pos)
   │
-  ├─ key in lemma index ───────────────► merge into that note ─────────────┐
-  │                                      (note no longer exists → as new)  │
-  │                                                                        │
-  └─ key not in index ─► canAddNotes                                        │
-                          ├─ ok ──────────► addNotes, add key to index ────┤
-                          └─ duplicate ───► findNotes + notesInfo          │
-                                 ├─ a note has the same key ─► adopt it,   │
-                                 │                             merge ──────┤
-                                 └─ only other POS ─► addNotes with        │
-                                                      allowDuplicate ──────┤
-                                                                           ▼
-                                   record row as processed (note id, lemma_key)
+  ├─ key in lemma index, note still in Anki ───────► merge into that note ────┐
+  │  (note gone → drop the index entry, continue below)                       │
+  │                                                                           │
+  └─ not in index ─► findNotes (note type + Lemma + SourceLang) + notesInfo   │
+                      ├─ a note has the same key ─► adopt it (index), merge ──┤
+                      └─ none ─► canAddNotes                                  │
+                                  ├─ ok ─────────► addNotes, index it ────────┤
+                                  └─ duplicate ──► addNotes with              │
+                                                   allowDuplicate, index it ──┤
+                                                                              ▼
+                                      record row as processed (note id, lemma_key)
 ```
+
+The Anki search runs on every index miss (not only when Anki reports a duplicate), so notes
+from before the index are adopted even when their spelling differs only in case or they sit
+in another deck. It is a local AnkiConnect call and cheap.
 
 Rows are processed one by one, as today, so two rows with the same lemma in one run become one
 add plus one merge.
@@ -167,20 +174,59 @@ For a known lemma, koanki reads the note with `notesInfo` and writes changes wit
 `updateNoteFields`:
 
 - **Examples:** append the sentence (seen form in bold, book title after it) unless the same
-  sentence (folded) is already in `Context` or `Examples`. At most `max_examples` entries
-  (default 3); when full, the oldest example is replaced. `Context` — the first sighting,
-  shown on the front — is never changed.
-- **Fill if empty:** `Forms`, `SeenAs`, `IPA` and similar fields are written only when the
-  note's field is empty. Content written by the user or an earlier run is never overwritten.
-- **Translation is not touched.** A different sense in the new sentence is out of scope for the
-  first version (see the sense check in §11 and Q3).
+  sentence (folded) is already in `Context` or `Examples`. All examples are kept, in the order
+  they were seen; there is no cap. `Context` — the first sighting, shown on the front — is
+  never changed.
+- **Fill if empty:** fields that describe the lemma itself — `Forms` and `IPA` — are written
+  only when the note's field is empty. Content written by the user or an earlier run is never
+  overwritten. `SeenAs` and `ContextTranslation` describe the first sentence and are left
+  alone.
+- **Translation is not touched.** If the new sentence uses a different meaning, the sense
+  check (§4.5.1) adds it to `OtherSenses`.
 
 Scheduling is not affected: `updateNoteFields` changes field content only. One known
 AnkiConnect limitation: an update to a note that is currently open in Anki's browser editor
 can get lost. Every merge is logged with its note ID, so this is easy to spot.
 
-`sync --dry-run` prints `"action": "add"` or `"action": "merge"` with the target note ID and
-writes nothing.
+`sync --dry-run` prints `"action": "add"` or `"action": "merge"` (with `target_note_id` when
+known) and writes nothing. Like before, it does not contact Anki, so it only knows the local
+lemma index and earlier rows of the same run; a note that Anki has but the index doesn't still
+shows as `"add"`. The sense check does not run in a dry run.
+
+#### 4.5.1 Sense check
+
+Runs on every merge that adds a new sentence. It is skipped for Dictionary-lookup rows (no
+sentence), for a sentence the note already has (it was judged before), and when
+`features.sense_check = false`. It is a second, small LLM call with its
+own schema:
+
+- **Input:** source language, lemma, POS, the note's `Translation` and `OtherSenses`, and the
+  new sentence with the seen form marked.
+- **Output:**
+
+  ```json
+  { "same_sense": false, "sense": "the land along the side of a river", "confidence": 0.86 }
+  ```
+
+  `sense` is written like `Translation`: a definition in monolingual mode, a translation
+  otherwise.
+
+Rules:
+
+- `same_sense: true` → only the example is added.
+- `same_sense: false` and `confidence` ≥ `sense_check_min_confidence` (default 0.7) → `sense`
+  is appended to `OtherSenses`, unless an entry with the same (folded) text already exists.
+- `same_sense: false` below the threshold → nothing is added, and the note gets the `review`
+  tag for a manual look.
+- At most `max_other_senses` (default 3). When the list is full, nothing more is added and the
+  note gets the `review` tag.
+- The check runs before `updateNoteFields`, so a single update writes the example and the sense.
+- If the check fails (no valid JSON after the retries), the example is merged anyway and a
+  warning is logged.
+
+The input includes all known senses, not just `Translation`, so the model compares against
+everything the card already teaches. Cost: one extra call per re-sighting of a known lemma; new
+words cost the same as today.
 
 ### 4.6 Lemma index in the state DB
 
@@ -204,8 +250,8 @@ The index is a cache of what is in Anki, not the source of truth:
 
 - **Stale entry** (note deleted in Anki): `notesInfo` returns nothing → the entry is dropped and
   the word is treated as new.
-- **Missing entry** (note created before v2, or on another machine): found through the
-  duplicate branch in §4.4 and adopted.
+- **Missing entry** (note created before v2, or on another machine): found by the Anki search
+  in §4.4 and adopted.
 
 So no backfill is required. An optional `koanki reindex` rebuilds the index from Anki in one go.
 
@@ -239,8 +285,7 @@ flagged as irregular or not, and the code decides by policy what to show (§5.4)
 ### 5.2 Slots
 
 A closed set of slot keys (schema `enum`) keeps labels consistent across cards. The displayed
-labels come from a small table in code (English first; labels in the target language can be
-added later, Q7).
+labels come from a small table in code, in English for every target language (Q7).
 
 | Slot | Meaning | Examples |
 |---|---|---|
@@ -391,7 +436,9 @@ on_known_lemma = "merge"      # merge | skip | add
                               #   merge: append the sentence to the existing note (default)
                               #   skip:  record the row as processed, change nothing
                               #   add:   create a separate note anyway (old behavior)
-max_examples   = 3            # sentences kept in the Examples field
+sense_check                = true  # second LLM call when a known lemma is seen again (§4.5.1)
+sense_check_min_confidence = 0.7   # below this a new sense is not added; note tagged "review"
+max_other_senses           = 3     # entries kept in the OtherSenses field
 seen_as        = true         # fill SeenAs ("beheld = past tense")
 forms          = "irregular"  # off | irregular | always
 forms_card     = false        # third card type that drills the forms
@@ -436,6 +483,7 @@ lemma.
 |---|---|
 | Dictionary-lookup row (no sentence) | Lemma from the word alone; `seen_as` null; nothing to bold; merge works the same. |
 | Separable verb, only *fing* highlighted | The sentence lets the LLM re-attach the particle → *anfangen* (§4.1 rule). |
+| Phrasal verb, only *gave* highlighted | Lemma *give up* (§4.1). If the LLM misses the phrasal verb, the row lands on *give*; the sense check then adds the meaning to `OtherSenses` instead of losing it. |
 | Same surface, different lemmas (*left* → *leave* / *left*) | The sentence decides; different keys → different notes. |
 | LLM lemma differs from KOReader's lookup word | The LLM wins; `WordClean` stays a hint in the prompt. |
 | Variant forms (*dreamed/dreamt*) | One item `"dreamed / dreamt"`, irregular. |
@@ -466,8 +514,11 @@ lemma.
 
 - Key folding (NFC, case, whitespace, punctuation) and POS mapping.
 - `BuildNote` v2: `Lemma` first, escaping, bolding, `Forms` rendering for each policy.
-- Merge: example append/dedupe/cap, fill-if-empty, stale index, adopt-from-duplicate branch,
+- Merge: example append/dedupe (no cap), fill-if-empty, stale index, adopting notes found by the Anki search,
   against a fake AnkiConnect (`canAddNotes`, `findNotes`, `notesInfo`, `updateNoteFields`).
+- Sense check, against a fake Ollama: same sense → only the example; new sense → appended
+  once (dedupe); low confidence or full list → nothing added, `review` tag; failed check →
+  example still merged; Dictionary-lookup row → no call.
 - English downgrade-only check (*walked* downgraded; *went*, *laid*, *paid* untouched).
 - State DB migration from a v1 file.
 - Note type upgrade: v1 templates updated, customized templates left alone.
@@ -478,33 +529,41 @@ cases and expected lemma, POS and irregular forms, run via `koanki eval` (or
 `go test -tags ollama`). It reports accuracy per model so `gemma3:27b`, `qwen3:32b` and smaller
 models can be compared. Initial cases: *beheld → behold*, *gouging → gouge*, *mice → mouse*,
 *worse → bad*, *went → go*, *children → child*, *ging → gehen*, *fing … an → anfangen*,
-*Hunde → Hund*, *sprang → springa*, *större → stor*, *left* (verb vs. adjective), *dreamt*.
+*Hunde → Hund*, *sprang → springa*, *större → stor*, *left* (verb vs. adjective), *dreamt*,
+*gave* in "She gave up." → *give up* vs. "She gave him a book." → *give*,
+*looked* in "He looked the word up." → *look up*.
+Sense-check pairs (same lemma, two sentences, expected same/different): *bank* (money / river),
+*bright* (light / clever), *run* (jog / manage a company), plus pairs that should count as the
+*same* sense despite different wording.
 
 ## 11. Rollout
 
-1. **Phase 1 — base-form notes:** lemma rules in the prompt, POS enum, lemma key, note type v2
-   (`Lemma` first, `Examples`), HTML escaping, lemma index, merge, note-type and state
+1. **Phase 1 — base-form notes (implemented):** lemma rules in the prompt, POS enum, lemma key,
+   note type v2 with all its fields (`SeenAs` and `Forms` stay empty until Phase 2, so the note
+   type changes only once), HTML escaping, lemma index, merge, sense check, note-type and state
    migration, dry-run output.
 2. **Phase 2 — forms:** schema and prompt fields, validation, English check, display policy,
    rendering, `SeenAs`, configuration.
-3. **Phase 3 — optional:** forms card, `backfill-forms`, `duplicates`, `reindex`, and a *sense
-   check* for known lemmas — a second LLM call that compares the new sentence's meaning with
-   the note's translation and, if it differs, adds it as another sense.
+3. **Phase 3 — optional:** forms card, `backfill-forms`, `duplicates`, `reindex`.
 
 Each phase is its own pull request and can ship on its own.
 
-## 12. Open questions
+## 12. Decisions
 
-- **Q1** Homographs: separate notes per part of speech (recommended), or one note per lemma?
-- **Q2** Recognition front: lemma large (recommended, matches the goal) or the seen form large
-  with the lemma below?
-- **Q3** Different meaning when a known lemma shows up again: ignore in the first version
-  (recommended), always add as "other sense", or wait for the phase-3 sense check?
-- **Q4** Phrasal verb from a single-word highlight: lemma *give* (recommended) or *give up*?
-- **Q5** Examples: keep the first N stable, or rolling most recent N (recommended)?
-- **Q6** German and Swedish nouns: always show gender and plural (recommended)?
-- **Q7** Form labels in the target language (e.g. German labels in English → German mode), or
-  English only for now (recommended)?
+- **Q1 — decided:** Homographs get separate notes per part of speech (key = language + lemma +
+  POS, §4.2).
+- **Q2 — decided:** The recognition front shows the lemma large, with the sentence below and
+  the seen form in bold (§4.3).
+- **Q3 — decided:** When a known lemma shows up again, a sense check (second LLM call) decides
+  whether the meaning is new. New senses go into their own field `OtherSenses`, shown only on
+  the back of the recognition card. Part of Phase 1 (§4.5.1).
+- **Q4 — decided:** A single highlighted word that belongs to a phrasal verb gets the whole
+  phrasal verb as lemma (*gave* in "She gave up." → *give up*, §4.1).
+- **Q5 — decided:** All example sentences are kept, in the order they were seen; no cap (§4.5).
+- **Q6 — decided:** German and Swedish nouns always show gender and plural, even when regular
+  (`features.forms_always` defaults, §5.4; changeable per language).
+- **Q7 — decided:** Form labels are English for every target language for now; labels in other
+  languages can be added later (§5.2).
 
 ## Appendix: example enrichments
 

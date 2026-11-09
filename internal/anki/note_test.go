@@ -2,6 +2,7 @@ package anki
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/config"
@@ -116,4 +117,105 @@ func TestBuildNoteOptionalFieldsGatedOff(t *testing.T) {
 
 func hasTag(tags []string, want string) bool {
 	return slices.Contains(tags, want)
+}
+
+func TestFieldsLemmaFirst(t *testing.T) {
+	if Fields[0] != "Lemma" {
+		t.Fatalf("first field = %q, want Lemma (Anki's duplicate check uses it)", Fields[0])
+	}
+	n := BuildNote(baseConfig(), model.VocabEntry{Surface: "gouging"}, model.Enrichment{Lemma: "gouge", Translation: "x"}, false)
+	for _, f := range Fields {
+		if _, ok := n.Fields[f]; !ok {
+			t.Errorf("BuildNote does not set field %q", f)
+		}
+	}
+	if len(n.Fields) != len(Fields) {
+		t.Errorf("BuildNote sets %d fields, note type has %d", len(n.Fields), len(Fields))
+	}
+}
+
+func TestBuildNoteEscapesAndHighlights(t *testing.T) {
+	cfg := baseConfig()
+	entry := model.VocabEntry{
+		Surface: "beheld", Context: "She beheld <the> ruin & more.",
+		ContextBefore: "She", ContextAfter: "<the> ruin & more.", Book: "Tom & Jerry",
+	}
+	enr := model.Enrichment{SourceLanguage: "en", Lemma: " behold ", PartOfSpeech: "verb", Translation: "to see <something>", Confidence: 0.9}
+	n := BuildNote(cfg, entry, enr, false)
+	if got := n.Fields["Context"]; got != "She <b>beheld</b> &lt;the&gt; ruin &amp; more." {
+		t.Errorf("Context = %q", got)
+	}
+	if n.Fields["Lemma"] != "behold" {
+		t.Errorf("Lemma = %q", n.Fields["Lemma"])
+	}
+	if n.Fields["Translation"] != "to see &lt;something&gt;" || n.Fields["Book"] != "Tom &amp; Jerry" {
+		t.Errorf("fields not escaped: %+v", n.Fields)
+	}
+}
+
+func TestHighlightedContextFallback(t *testing.T) {
+	// No before/after split (e.g. `koanki enrich`): first whole-word match, case-insensitive.
+	e := model.VocabEntry{Surface: "ran", Context: "Frank ran. Ran again."}
+	if got := HighlightedContext(e); got != "Frank <b>ran</b>. Ran again." {
+		t.Errorf("got %q", got)
+	}
+	if got := HighlightedContext(model.VocabEntry{Surface: "zzz", Context: "no match here"}); got != "no match here" {
+		t.Errorf("no match should leave the sentence unbolded, got %q", got)
+	}
+	if got := HighlightedContext(model.VocabEntry{Surface: "jilt"}); got != "" {
+		t.Errorf("no context should give empty, got %q", got)
+	}
+}
+
+func TestAppendExample(t *testing.T) {
+	first := model.VocabEntry{Surface: "ran", Context: "He ran home.", ContextBefore: "He", ContextAfter: "home."}
+	second := model.VocabEntry{Surface: "running", Context: "She was running late.", ContextBefore: "She was", ContextAfter: "late.", Book: "B"}
+	context := HighlightedContext(first)
+
+	ex, changed := AppendExample("", context, second)
+	if !changed || ex != `<div class="example"><span class="example-text">She was <b>running</b> late.</span> <span class="example-book">— B</span></div>` {
+		t.Fatalf("first append: changed=%v ex=%q", changed, ex)
+	}
+	if _, changed := AppendExample(ex, context, second); changed {
+		t.Error("the same sentence must not be added twice")
+	}
+	if _, changed := AppendExample(ex, context, first); changed {
+		t.Error("the note's own Context must not be repeated as an example")
+	}
+	// v1 notes have an unbolded Context; the comparison ignores markup.
+	if _, changed := AppendExample("", "He ran home.", first); changed {
+		t.Error("plain v1 Context should be recognized as the same sentence")
+	}
+	if _, changed := AppendExample("", context, model.VocabEntry{Surface: "ran"}); changed {
+		t.Error("a row without sentence adds no example")
+	}
+	third := model.VocabEntry{Surface: "runs", Context: "It runs.", ContextBefore: "It", ContextAfter: "."}
+	ex2, changed := AppendExample(ex, context, third)
+	if !changed || !strings.HasPrefix(ex2, ex) || strings.Count(ex2, `class="example"`) != 2 {
+		t.Errorf("examples must be appended in order without cap: %q", ex2)
+	}
+}
+
+func TestAppendSense(t *testing.T) {
+	translation := "an institution that keeps money"
+	s, res := AppendSense("", translation, "the land along a river", 2)
+	if res != SenseAdded || s != `<div class="sense">the land along a river</div>` {
+		t.Fatalf("res=%v s=%q", res, s)
+	}
+	if _, res := AppendSense(s, translation, "The land  along a river", 2); res != SenseDuplicate {
+		t.Errorf("same sense (case/space) should be a duplicate, got %v", res)
+	}
+	if _, res := AppendSense(s, translation, "An institution that keeps money", 2); res != SenseDuplicate {
+		t.Errorf("the main translation should be a duplicate, got %v", res)
+	}
+	s, _ = AppendSense(s, translation, "a row of similar things", 2)
+	if got := SenseItems(s); !slices.Equal(got, []string{"the land along a river", "a row of similar things"}) {
+		t.Errorf("SenseItems = %v", got)
+	}
+	if _, res := AppendSense(s, translation, "a tilt of an aircraft", 2); res != SenseListFull {
+		t.Errorf("third sense with max 2 should be refused, got %v", res)
+	}
+	if got, _ := AppendSense("", translation, "x < y", 3); got != `<div class="sense">x &lt; y</div>` {
+		t.Errorf("sense must be escaped, got %q", got)
+	}
 }

@@ -115,3 +115,50 @@ func TestModelAvailable(t *testing.T) {
 		t.Errorf("expected model to be available, names=%v", names)
 	}
 }
+
+func senseReq() SenseRequest {
+	return SenseRequest{
+		SourceLanguage: "en", Lemma: "bank", PartOfSpeech: "noun",
+		KnownSenses: []string{"an institution that keeps money"},
+		Surface:     "bank", Sentence: "They sat on the bank of the river.",
+	}
+}
+
+func TestCheckSenseNewSense(t *testing.T) {
+	srv, calls := chatServer(t, `{"same_sense":false,"sense":"the land along a river","confidence":0.9}`)
+	res, err := testClient(srv.URL).CheckSense(context.Background(), senseReq(), "English")
+	if err != nil {
+		t.Fatalf("CheckSense: %v", err)
+	}
+	if res.SameSense || res.NewSense() != "the land along a river" || res.Confidence != 0.9 {
+		t.Errorf("unexpected result: %+v", res)
+	}
+	if *calls != 1 {
+		t.Errorf("expected 1 call, got %d", *calls)
+	}
+}
+
+func TestCheckSenseSameSense(t *testing.T) {
+	srv, _ := chatServer(t, `{"same_sense":true,"sense":null,"confidence":0.95}`)
+	res, err := testClient(srv.URL).CheckSense(context.Background(), senseReq(), "English")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.SameSense || res.NewSense() != "" {
+		t.Errorf("unexpected result: %+v", res)
+	}
+}
+
+func TestCheckSenseRetriesWhenSenseMissing(t *testing.T) {
+	// "different sense" without a sense is invalid → retried.
+	srv, calls := chatServer(t,
+		`{"same_sense":false,"sense":null,"confidence":0.8}`,
+		`{"same_sense":false,"sense":"the land along a river","confidence":0.8}`)
+	res, err := testClient(srv.URL).CheckSense(context.Background(), senseReq(), "English")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.NewSense() == "" || *calls != 2 {
+		t.Errorf("result %+v after %d calls", res, *calls)
+	}
+}

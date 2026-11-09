@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -49,8 +51,12 @@ func TestEnsureModelCreatesWhenAbsent(t *testing.T) {
 		"modelNames":  []string{"Basic", "Cloze"}, // our model absent
 		"createModel": map[string]any{},
 	})
-	if err := c.EnsureModel(context.Background(), "KOReader Vocab"); err != nil {
+	rep, err := c.EnsureModel(context.Background(), "KOReader Vocab", false)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !rep.Created {
+		t.Error("report should say the model was created")
 	}
 	// Expect modelNames then createModel.
 	if len(*seen) != 2 || (*seen)[0].Action != "modelNames" || (*seen)[1].Action != "createModel" {
@@ -81,13 +87,153 @@ func TestEnsureModelCreatesWhenAbsent(t *testing.T) {
 	}
 }
 
-func TestEnsureModelSkipsWhenPresent(t *testing.T) {
-	c, seen := fakeAnki(t, map[string]any{"modelNames": []string{"KOReader Vocab"}})
-	if err := c.EnsureModel(context.Background(), "KOReader Vocab"); err != nil {
+func currentTemplates() map[string]any {
+	out := map[string]any{}
+	for _, t := range cardTemplates() {
+		out[t.Name] = map[string]string{"Front": t.Front, "Back": t.Back}
+	}
+	return out
+}
+
+func v1Templates() map[string]any {
+	out := map[string]any{}
+	for _, t := range cardTemplatesV1() {
+		out[t.Name] = map[string]string{"Front": t.Front, "Back": t.Back}
+	}
+	return out
+}
+
+var v1Fields = []string{"Word", "Lemma", "Translation", "Context", "ContextTranslation",
+	"Book", "SourceLang", "TargetLang", "IPA", "POS", "Extra"}
+
+func TestEnsureModelNoChangesWhenCurrent(t *testing.T) {
+	c, seen := fakeAnki(t, map[string]any{
+		"modelNames":      []string{"KOReader Vocab"},
+		"modelFieldNames": Fields,
+		"modelTemplates":  currentTemplates(),
+		"modelStyling":    map[string]string{"css": cardCSS},
+	})
+	rep, err := c.EnsureModel(context.Background(), "KOReader Vocab", false)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(*seen) != 1 {
-		t.Fatalf("should not call createModel when present: %+v", actions(*seen))
+	for _, a := range actions(*seen) {
+		switch a {
+		case "createModel", "modelFieldAdd", "modelFieldReposition", "updateModelTemplates", "updateModelStyling":
+			t.Errorf("unexpected write %q on an up-to-date model", a)
+		}
+	}
+	if rep.SchemaChanged() || rep.CSSUpdated || len(rep.TemplatesUpdated) > 0 {
+		t.Errorf("report should be empty: %+v", rep)
+	}
+}
+
+func TestEnsureModelUpgradesV1(t *testing.T) {
+	c, seen := fakeAnki(t, map[string]any{
+		"modelNames":      []string{"KOReader Vocab"},
+		"modelFieldNames": v1Fields,
+		"modelTemplates":  v1Templates(),
+		"modelStyling":    map[string]string{"css": cardCSSV1},
+	})
+	rep, err := c.EnsureModel(context.Background(), "KOReader Vocab", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"SeenAs", "Forms", "OtherSenses", "Examples"}; !slices.Equal(rep.FieldsAdded, want) {
+		t.Errorf("FieldsAdded = %v, want %v", rep.FieldsAdded, want)
+	}
+	if !rep.LemmaMovedFirst || !rep.SchemaChanged() {
+		t.Errorf("Lemma should be moved first: %+v", rep)
+	}
+	if len(rep.TemplatesUpdated) != 2 || !rep.CSSUpdated {
+		t.Errorf("unmodified v1 templates/CSS should be updated: %+v", rep)
+	}
+
+	// The adds use indices that end in the v2 order once Lemma moves to the front.
+	got := slices.Clone(v1Fields)
+	for _, r := range *seen {
+		switch r.Action {
+		case "modelFieldAdd":
+			var p struct {
+				FieldName string `json:"fieldName"`
+				Index     int    `json:"index"`
+			}
+			json.Unmarshal(mustParam(t, r, "modelName", "fieldName", "index"), &p)
+			got = slices.Insert(got, p.Index, p.FieldName)
+		case "modelFieldReposition":
+			var p struct {
+				FieldName string `json:"fieldName"`
+				Index     int    `json:"index"`
+			}
+			json.Unmarshal(mustParam(t, r, "modelName", "fieldName", "index"), &p)
+			i := slices.Index(got, p.FieldName)
+			got = slices.Insert(slices.Delete(got, i, i+1), p.Index, p.FieldName)
+		}
+	}
+	if !slices.Equal(got, Fields) {
+		t.Errorf("resulting field order = %v, want %v", got, Fields)
+	}
+}
+
+func TestEnsureModelKeepsCustomizedTemplates(t *testing.T) {
+	custom := v1Templates()
+	custom[recognitionName] = map[string]string{"Front": "<div>{{Word}}</div> my own", "Back": "{{FrontSide}}"}
+	results := map[string]any{
+		"modelNames":      []string{"KOReader Vocab"},
+		"modelFieldNames": Fields,
+		"modelTemplates":  custom,
+		"modelStyling":    map[string]string{"css": ".card { color: hotpink; }"},
+	}
+	c, seen := fakeAnki(t, results)
+	rep, err := c.EnsureModel(context.Background(), "KOReader Vocab", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(rep.TemplatesSkipped, []string{recognitionName}) || !slices.Equal(rep.TemplatesUpdated, []string{productionName}) {
+		t.Errorf("only the unmodified template should be updated: %+v", rep)
+	}
+	if !rep.CSSSkipped || rep.CSSUpdated {
+		t.Errorf("customized CSS should be skipped: %+v", rep)
+	}
+	for _, r := range *seen {
+		if r.Action == "updateModelTemplates" && strings.Contains(string(mustParam(t, r, "model")), "my own") {
+			t.Error("customized template must not be sent back")
+		}
+	}
+
+	// --force-templates overwrites both.
+	c2, _ := fakeAnki(t, results)
+	rep, err = c2.EnsureModel(context.Background(), "KOReader Vocab", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.TemplatesUpdated) != 2 || !rep.CSSUpdated {
+		t.Errorf("force should update everything: %+v", rep)
+	}
+}
+
+func TestNotesInfoDropsMissingNotes(t *testing.T) {
+	c, _ := fakeAnki(t, map[string]any{"notesInfo": []any{
+		map[string]any{"noteId": 7, "modelName": "KOReader Vocab", "fields": map[string]any{
+			"Lemma": map[string]any{"value": "behold", "order": 0},
+		}},
+		map[string]any{}, // AnkiConnect returns {} for an unknown ID
+	}})
+	notes, err := c.NotesInfo(context.Background(), []int64{7, 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notes) != 1 || notes[0].NoteID != 7 || notes[0].Field("Lemma") != "behold" {
+		t.Errorf("notes = %+v", notes)
+	}
+}
+
+func TestSearchTermEscapes(t *testing.T) {
+	if got := SearchTerm("Lemma", `a*b_c"d\`); got != `"Lemma:a\*b\_c\"d\\"` {
+		t.Errorf("SearchTerm = %s", got)
+	}
+	if got := SearchTerm("note", "KOReader Vocab"); got != `"note:KOReader Vocab"` {
+		t.Errorf("SearchTerm = %s", got)
 	}
 }
 

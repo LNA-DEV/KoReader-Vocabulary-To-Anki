@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -118,9 +119,65 @@ func (c *Client) ModelAvailable(ctx context.Context) (bool, []string, error) {
 // Enrich runs one word through the model, retrying on invalid/incomplete JSON, and
 // returns the validated Enrichment. targetName is the human-readable target language.
 func (c *Client) Enrich(ctx context.Context, entry model.VocabEntry, targetName string) (model.Enrichment, error) {
-	messages := BuildMessages(entry, targetName)
-	var lastErr error
+	enr, err := structured[model.Enrichment](ctx, c, BuildMessages(entry, targetName), schemaJSON, "enrich", "word", entry.Word)
+	if err != nil {
+		return model.Enrichment{}, fmt.Errorf("enriching %q: %w", entry.Word, err)
+	}
+	return enr, nil
+}
 
+// SenseRequest asks whether a known word is used in a new meaning.
+type SenseRequest struct {
+	SourceLanguage string
+	Lemma          string
+	PartOfSpeech   string
+	KnownSenses    []string // the note's Translation first, then its OtherSenses (plain text)
+	Surface        string   // the word as it appears in Sentence
+	Sentence       string
+}
+
+// SenseResult is the structured answer of a sense check.
+type SenseResult struct {
+	SameSense  bool    `json:"same_sense"`
+	Sense      *string `json:"sense"`
+	Confidence float64 `json:"confidence"`
+}
+
+// NewSense returns the trimmed new meaning, or "" when there is none.
+func (r SenseResult) NewSense() string {
+	if r.SameSense || r.Sense == nil {
+		return ""
+	}
+	return strings.TrimSpace(*r.Sense)
+}
+
+// Validate checks that a "different sense" answer actually carries that sense.
+func (r SenseResult) Validate() error {
+	if r.Confidence < 0 || r.Confidence > 1 {
+		return fmt.Errorf("confidence %.3f out of range [0,1]", r.Confidence)
+	}
+	if !r.SameSense && (r.Sense == nil || strings.TrimSpace(*r.Sense) == "") {
+		return fmt.Errorf("same_sense is false but sense is empty")
+	}
+	return nil
+}
+
+// CheckSense runs the sense check for a word that already has a note.
+func (c *Client) CheckSense(ctx context.Context, req SenseRequest, targetName string) (SenseResult, error) {
+	res, err := structured[SenseResult](ctx, c, BuildSenseMessages(req, targetName), senseSchemaJSON, "sense check", "lemma", req.Lemma)
+	if err != nil {
+		return SenseResult{}, fmt.Errorf("sense check for %q: %w", req.Lemma, err)
+	}
+	return res, nil
+}
+
+type validator interface{ Validate() error }
+
+// structured performs a chat call with a JSON schema, decodes the reply into T and
+// validates it, retrying with a corrective nudge on invalid output.
+func structured[T validator](ctx context.Context, c *Client, messages []Message, schema json.RawMessage, what string, logArgs ...any) (T, error) {
+	var zero T
+	var lastErr error
 	for attempt := 1; attempt <= c.maxRetries; attempt++ {
 		if attempt > 1 {
 			// Corrective nudge appended as a fresh user turn.
@@ -130,74 +187,72 @@ func (c *Client) Enrich(ctx context.Context, entry model.VocabEntry, targetName 
 			})
 		}
 
-		enr, err := c.once(ctx, messages)
-		if err != nil {
+		var out T
+		if err := c.chat(ctx, messages, schema, &out); err != nil {
 			lastErr = err
-			c.logger.Warn("enrich attempt failed", "word", entry.Word, "attempt", attempt, "err", err)
+			c.logger.Warn(what+" attempt failed", slices.Concat(logArgs, []any{"attempt", attempt, "err", err})...)
 			continue
 		}
-		if err := enr.Validate(); err != nil {
+		if err := out.Validate(); err != nil {
 			lastErr = err
-			c.logger.Warn("enrich validation failed", "word", entry.Word, "attempt", attempt, "err", err)
+			c.logger.Warn(what+" validation failed", slices.Concat(logArgs, []any{"attempt", attempt, "err", err})...)
 			continue
 		}
-		return enr, nil
+		return out, nil
 	}
-	return model.Enrichment{}, fmt.Errorf("enriching %q failed after %d attempts: %w", entry.Word, c.maxRetries, lastErr)
+	return zero, fmt.Errorf("failed after %d attempts: %w", c.maxRetries, lastErr)
 }
 
-// once performs a single /api/chat call and parses the JSON content.
-func (c *Client) once(ctx context.Context, messages []Message) (model.Enrichment, error) {
+// chat performs a single /api/chat call and decodes the JSON content into out.
+func (c *Client) chat(ctx context.Context, messages []Message, schema json.RawMessage, out any) error {
 	reqBody := chatRequest{
 		Model:     c.model,
 		Messages:  messages,
 		Stream:    false,
-		Format:    schemaJSON,
+		Format:    schema,
 		KeepAlive: c.keepAlive,
 		Think:     c.think,
 		Options:   chatOptions{Temperature: c.temperature},
 	}
 	buf, err := json.Marshal(reqBody)
 	if err != nil {
-		return model.Enrichment{}, err
+		return err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/chat", bytes.NewReader(buf))
 	if err != nil {
-		return model.Enrichment{}, err
+		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return model.Enrichment{}, fmt.Errorf("calling Ollama: %w", err)
+		return fmt.Errorf("calling Ollama: %w", err)
 	}
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return model.Enrichment{}, err
+		return err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return model.Enrichment{}, fmt.Errorf("ollama HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		return fmt.Errorf("ollama HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 
 	var cr chatResponse
 	if err := json.Unmarshal(raw, &cr); err != nil {
-		return model.Enrichment{}, fmt.Errorf("decoding chat response: %w", err)
+		return fmt.Errorf("decoding chat response: %w", err)
 	}
 	if cr.Error != "" {
-		return model.Enrichment{}, fmt.Errorf("ollama error: %s", cr.Error)
+		return fmt.Errorf("ollama error: %s", cr.Error)
 	}
 
 	content := strings.TrimSpace(cr.Message.Content)
 	if content == "" {
-		return model.Enrichment{}, fmt.Errorf("empty model content")
+		return fmt.Errorf("empty model content")
 	}
-
-	var enr model.Enrichment
-	if err := json.Unmarshal([]byte(content), &enr); err != nil {
-		return model.Enrichment{}, fmt.Errorf("model did not return valid JSON: %w", err)
+	if err := json.Unmarshal([]byte(content), out); err != nil {
+		return fmt.Errorf("model did not return valid JSON: %w", err)
 	}
-	return enr, nil
+	return nil
 }

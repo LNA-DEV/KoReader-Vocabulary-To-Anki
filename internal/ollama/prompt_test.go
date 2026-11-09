@@ -1,9 +1,12 @@
 package ollama
 
 import (
+	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/lemma"
 	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/model"
 )
 
@@ -40,5 +43,46 @@ func TestBuildMessagesNoContext(t *testing.T) {
 func TestSystemPromptTargetLanguage(t *testing.T) {
 	if !strings.Contains(systemPrompt("German"), "German") {
 		t.Error("system prompt not parameterized by target language")
+	}
+}
+
+func TestSystemPromptLemmaRules(t *testing.T) {
+	p := systemPrompt("English")
+	for _, want := range []string{"citation form", "give up", "anfangen", "sich erinnern", "scissors", "worse"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("system prompt missing lemma rule example %q", want)
+		}
+	}
+}
+
+func TestBuildSenseMessages(t *testing.T) {
+	msgs := BuildSenseMessages(SenseRequest{
+		SourceLanguage: "en", Lemma: "bank", PartOfSpeech: "noun",
+		KnownSenses: []string{"an institution that keeps money", "a row of similar things"},
+		Surface:     "bank", Sentence: "They sat on the bank of the river.",
+	}, "German")
+	if len(msgs) != 2 || !strings.Contains(msgs[0].Content, "German") {
+		t.Fatalf("unexpected messages: %+v", msgs)
+	}
+	u := msgs[1].Content
+	for _, want := range []string{"bank (noun, language: en)", "1. an institution that keeps money", "2. a row of similar things", "They sat on the bank of the river."} {
+		if !strings.Contains(u, want) {
+			t.Errorf("sense prompt missing %q\n%s", want, u)
+		}
+	}
+}
+
+func TestSchemaRestrictsPartOfSpeech(t *testing.T) {
+	var s struct {
+		Properties map[string]struct {
+			Enum []string `json:"enum"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(schemaJSON, &s); err != nil {
+		t.Fatal(err)
+	}
+	enum := s.Properties["part_of_speech"].Enum
+	if !slices.Equal(enum, lemma.POSClasses) {
+		t.Errorf("part_of_speech enum = %v, want %v", enum, lemma.POSClasses)
 	}
 }

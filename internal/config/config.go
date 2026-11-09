@@ -67,7 +67,23 @@ type FeaturesConfig struct {
 	ContextTranslation     bool    `toml:"context_translation"`
 	Alternatives           bool    `toml:"alternatives"`
 	LowConfidenceReviewTag float64 `toml:"low_confidence_review_tag"`
+
+	// What happens when a looked-up word's lemma already has a note: "merge" (add the
+	// sentence to that note), "skip" (record the row, change nothing) or "add" (create a
+	// separate note anyway).
+	OnKnownLemma string `toml:"on_known_lemma"`
+	// SenseCheck runs a second LLM call on merges to detect a new meaning.
+	SenseCheck              bool    `toml:"sense_check"`
+	SenseCheckMinConfidence float64 `toml:"sense_check_min_confidence"`
+	MaxOtherSenses          int     `toml:"max_other_senses"`
 }
+
+// Values of FeaturesConfig.OnKnownLemma.
+const (
+	OnKnownLemmaMerge = "merge"
+	OnKnownLemmaSkip  = "skip"
+	OnKnownLemmaAdd   = "add"
+)
 
 // Defaults returns the built-in configuration. The shipped default target is English
 // (monolingual definitions); the default model is gemma3:27b. Both are parameters.
@@ -101,10 +117,14 @@ func Defaults() Config {
 		},
 		Target: TargetConfig{Language: "en", Name: "English"},
 		Features: FeaturesConfig{
-			IPA:                    false,
-			ContextTranslation:     false,
-			Alternatives:           true,
-			LowConfidenceReviewTag: 0.6,
+			IPA:                     false,
+			ContextTranslation:      false,
+			Alternatives:            true,
+			LowConfidenceReviewTag:  0.6,
+			OnKnownLemma:            OnKnownLemmaMerge,
+			SenseCheck:              true,
+			SenseCheckMinConfidence: 0.7,
+			MaxOtherSenses:          3,
 		},
 	}
 }
@@ -171,6 +191,18 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Target.Language) == "" {
 		return fmt.Errorf("target.language is required")
+	}
+	switch c.Features.OnKnownLemma {
+	case OnKnownLemmaMerge, OnKnownLemmaSkip, OnKnownLemmaAdd:
+	default:
+		return fmt.Errorf("features.on_known_lemma must be %q, %q or %q, got %q",
+			OnKnownLemmaMerge, OnKnownLemmaSkip, OnKnownLemmaAdd, c.Features.OnKnownLemma)
+	}
+	if c.Features.SenseCheckMinConfidence < 0 || c.Features.SenseCheckMinConfidence > 1 {
+		return fmt.Errorf("features.sense_check_min_confidence must be between 0 and 1, got %v", c.Features.SenseCheckMinConfidence)
+	}
+	if c.Features.MaxOtherSenses < 0 {
+		return fmt.Errorf("features.max_other_senses must not be negative, got %d", c.Features.MaxOtherSenses)
 	}
 	return nil
 }

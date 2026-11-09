@@ -60,6 +60,11 @@ func TestListReconstructsEntries(t *testing.T) {
 	if g.context != "a wall of white bone, gouging deep." {
 		t.Errorf("gouge(1) context = %q", g.context)
 	}
+	for _, e := range entries {
+		if e.Word == "gouge(1)" && (e.ContextBefore != "a wall of white bone," || e.ContextAfter != "deep.") {
+			t.Errorf("gouge(1) context parts = %q / %q", e.ContextBefore, e.ContextAfter)
+		}
+	}
 
 	// Dictionary lookup: empty context, book present.
 	j := byWord["jilt"]

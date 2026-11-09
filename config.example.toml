@@ -59,3 +59,12 @@ ipa                       = false
 context_translation       = false
 alternatives              = true   # include synonyms / alternate senses
 low_confidence_review_tag = 0.6    # tag notes below this confidence "review"
+
+# One note per base form (lemma). When a looked-up word's lemma already has a note:
+#   "merge" — add the sentence to that note as an example (default)
+#   "skip"  — record the lookup, change nothing
+#   "add"   — create a separate note anyway
+on_known_lemma             = "merge"
+sense_check                = true  # on merge: second LLM call to detect a new meaning
+sense_check_min_confidence = 0.7   # below this a new meaning is not added; note tagged "review"
+max_other_senses           = 3     # meanings kept in the OtherSenses field

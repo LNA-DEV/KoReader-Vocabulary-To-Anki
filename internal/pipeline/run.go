@@ -14,6 +14,7 @@ import (
 	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/anki"
 	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/config"
 	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/koreader"
+	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/lemma"
 	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/model"
 	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/ollama"
 	"github.com/LNA-DEV/KoReader-Vocabulary-To-Anki/internal/state"
@@ -99,25 +100,31 @@ func (r *Runner) EnrichOne(ctx context.Context, entry model.VocabEntry) (model.E
 }
 
 // postProcess normalizes model output that varies run to run: it maps the source
-// language to an ISO code (the model sometimes returns "English" instead of "en") and
+// language to an ISO code (the model sometimes returns "English" instead of "en"),
+// tidies the lemma, maps the part of speech to its class (both feed the note key) and
 // backfills the surface form the model occasionally leaves blank.
 func postProcess(entry model.VocabEntry, enr *model.Enrichment) {
 	enr.SourceLanguage = config.NormalizeLanguageCode(enr.SourceLanguage)
+	enr.Lemma = lemma.Clean(enr.Lemma)
+	enr.PartOfSpeech = lemma.NormalizePOS(enr.PartOfSpeech)
 	if strings.TrimSpace(enr.SurfaceForm) == "" {
 		enr.SurfaceForm = entry.Surface
 	}
 }
 
-// InitAnki ensures the note type and the statically-known decks (default, fallback,
-// and every mapped deck) exist.
-func (r *Runner) InitAnki(ctx context.Context) error {
+// InitAnki ensures the note type (created or upgraded) and the statically-known decks
+// (default, fallback, and every mapped deck) exist. forceTemplates overwrites customized
+// card templates and CSS with the shipped version.
+func (r *Runner) InitAnki(ctx context.Context, forceTemplates bool) error {
 	client := r.newAnki()
 	if _, err := client.Version(ctx); err != nil {
 		return err
 	}
-	if err := client.EnsureModel(ctx, r.Cfg.Anki.NoteType); err != nil {
+	rep, err := client.EnsureModel(ctx, r.Cfg.Anki.NoteType, forceTemplates)
+	if err != nil {
 		return err
 	}
+	r.logModelReport(rep)
 	d := r.Cfg.Anki.Decks
 	decks := []string{d.Default, d.Fallback}
 	for _, deck := range d.Map {
@@ -180,12 +187,16 @@ func (r *Runner) Sync(ctx context.Context, opts SyncOptions) error {
 		if _, err := ank.Version(ctx); err != nil {
 			return err
 		}
-		if err := ank.EnsureModel(ctx, r.Cfg.Anki.NoteType); err != nil {
+		rep, err := ank.EnsureModel(ctx, r.Cfg.Anki.NoteType, false)
+		if err != nil {
 			return err
 		}
+		r.logModelReport(rep)
 	}
 
-	var enriched, added, skipped int
+	s := &syncer{r: r, ank: ank, oll: oll, st: st}
+	plannedAdds := make(map[string]bool) // dry-run: keys an earlier row of this run would add
+	var enriched, added, merged, skipped int
 	for i, entry := range delta {
 		enr, err := oll.Enrich(ctx, entry, r.Cfg.Target.Name)
 		if err != nil {
@@ -195,11 +206,16 @@ func (r *Runner) Sync(ctx context.Context, opts SyncOptions) error {
 		}
 		postProcess(entry, &enr)
 		enriched++
+		key := lemma.Key(enr.SourceLanguage, enr.Lemma, enr.PartOfSpeech)
 		lowConf := enr.Confidence < r.Cfg.Features.LowConfidenceReviewTag
 		note := anki.BuildNote(r.Cfg, entry, enr, lowConf)
 
 		if opts.DryRun {
-			r.printDryRun(i+1, entry, enr, note)
+			action, noteID, err := plannedAction(st, key, plannedAdds)
+			if err != nil {
+				return err
+			}
+			r.printDryRun(i+1, entry, enr, note, key, action, noteID)
 			continue
 		}
 
@@ -208,42 +224,79 @@ func (r *Runner) Sync(ctx context.Context, opts SyncOptions) error {
 			skipped++
 			continue
 		}
-		noteID, err := r.addNote(ctx, ank, note)
+		p, err := s.place(ctx, entry, enr, note, key)
 		if err != nil {
-			r.Logger.Warn("skipping word (add note failed)", "word", entry.Word, "err", err)
+			r.Logger.Warn("skipping word (placing note failed)", "word", entry.Word, "lemma_key", key, "err", err)
 			skipped++
 			continue
 		}
-		if err := st.Record(entry.Word, entry.TitleID, enr.SourceLanguage, noteID, entry.ContentHash, r.Now()); err != nil {
+		if err := st.Record(entry.Word, entry.TitleID, enr.SourceLanguage, p.noteID, entry.ContentHash, r.Now(), key); err != nil {
 			return err
 		}
-		added++
-		r.Logger.Info("added note", "word", entry.Word, "deck", note.DeckName, "note_id", noteID, "confidence", enr.Confidence, "review", lowConf)
+		switch p.action {
+		case actionAdd:
+			added++
+			r.Logger.Info("added note", "word", entry.Word, "lemma", enr.Lemma, "deck", note.DeckName,
+				"note_id", p.noteID, "confidence", enr.Confidence, "review", lowConf)
+		case actionMerge:
+			merged++
+			r.Logger.Info("merged into existing note", "word", entry.Word, "lemma", enr.Lemma, "note_id", p.noteID,
+				"example_added", p.exampleAdded, "new_sense", p.senseAdded, "review", p.review)
+		case actionSkip:
+			r.Logger.Info("lemma already has a note; skipped (on_known_lemma = skip)", "word", entry.Word,
+				"lemma", enr.Lemma, "note_id", p.noteID)
+		}
 	}
 
-	r.Logger.Info("sync complete", "enriched", enriched, "added", added, "skipped", skipped)
+	r.Logger.Info("sync complete", "enriched", enriched, "added", added, "merged", merged, "skipped", skipped)
 	return nil
 }
 
-// addNote adds a single note, tolerating the duplicate case: if AnkiConnect refuses it
-// as a duplicate we still return a 0 id so the word is recorded and never re-enriched.
-func (r *Runner) addNote(ctx context.Context, ank *anki.Client, note anki.Note) (int64, error) {
-	can, err := ank.CanAddNotes(ctx, []anki.Note{note})
-	if err != nil {
-		return 0, err
+// plannedAction predicts, without contacting Anki, whether a dry-run row would be added
+// or merged. It only knows the local lemma index and earlier rows of the same run, so a
+// note Anki already has but the index does not would still show as "add".
+func plannedAction(st *state.Store, key string, plannedAdds map[string]bool) (string, int64, error) {
+	if l, ok, err := st.LookupLemma(key); err != nil {
+		return "", 0, err
+	} else if ok {
+		return actionMerge, l.NoteID, nil
 	}
-	if len(can) == 1 && !can[0] {
-		r.Logger.Info("note already in Anki (duplicate); recording as processed", "word", note.Fields["Word"])
-		return 0, nil
+	if plannedAdds[key] {
+		return actionMerge, 0, nil
 	}
-	ids, err := ank.AddNotes(ctx, []anki.Note{note})
-	if err != nil {
-		return 0, err
+	plannedAdds[key] = true
+	return actionAdd, 0, nil
+}
+
+// logModelReport tells the user what EnsureModel changed in their note type.
+func (r *Runner) logModelReport(rep anki.ModelReport) {
+	name := r.Cfg.Anki.NoteType
+	if rep.Created {
+		r.Logger.Info("created note type", "note_type", name)
+		return
 	}
-	if len(ids) == 1 {
-		return ids[0], nil
+	if len(rep.FieldsAdded) > 0 {
+		r.Logger.Info("added fields to note type", "note_type", name, "fields", rep.FieldsAdded)
 	}
-	return 0, nil
+	if rep.LemmaMovedFirst {
+		r.Logger.Info("moved Lemma to the first field; Anki's duplicate check now uses the base form", "note_type", name)
+	}
+	if rep.SchemaChanged() {
+		r.Logger.Warn("note type fields changed: Anki will ask for a full upload at the next AnkiWeb sync (sync your other devices first)", "note_type", name)
+	}
+	if len(rep.TemplatesUpdated) > 0 {
+		r.Logger.Info("updated card templates", "note_type", name, "templates", rep.TemplatesUpdated)
+	}
+	if len(rep.TemplatesSkipped) > 0 {
+		r.Logger.Warn("card templates are customized and were not updated; run `koanki init-anki --force-templates` to replace them",
+			"note_type", name, "templates", rep.TemplatesSkipped)
+	}
+	if rep.CSSUpdated {
+		r.Logger.Info("updated card styling", "note_type", name)
+	}
+	if rep.CSSSkipped {
+		r.Logger.Warn("card styling is customized and was not updated; run `koanki init-anki --force-templates` to replace it", "note_type", name)
+	}
 }
 
 func (r *Runner) logInput(stats koreader.Stats) {
@@ -261,14 +314,19 @@ func (r *Runner) logInput(stats koreader.Stats) {
 		"newest_lookup", newest)
 }
 
-func (r *Runner) printDryRun(n int, entry model.VocabEntry, enr model.Enrichment, note anki.Note) {
+func (r *Runner) printDryRun(n int, entry model.VocabEntry, enr model.Enrichment, note anki.Note, key, action string, noteID int64) {
 	payload := map[string]any{
 		"n":          n,
 		"word":       entry.Word,
+		"lemma_key":  key,
+		"action":     action,
 		"deck":       note.DeckName,
 		"tags":       note.Tags,
 		"enrichment": enr,
 		"fields":     note.Fields,
+	}
+	if noteID != 0 {
+		payload["target_note_id"] = noteID
 	}
 	out, _ := json.MarshalIndent(payload, "", "  ")
 	fmt.Println(string(out))

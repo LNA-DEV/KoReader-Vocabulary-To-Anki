@@ -7,8 +7,10 @@ add-on.
 
 For each *new* word it infers the source language, lemmatizes, and — using the sentence
 the word appeared in to disambiguate — produces an in-context entry, then pushes a
-**bidirectional** note (recognition + production cards) into Anki. It's safe to re-run:
-only words not seen before are processed.
+**bidirectional** note (recognition + production cards) into Anki. There is **one note per
+base form**: looking up *ran* and later *running* gives one note for *run*, and the second
+sentence is added to it as an example. It's safe to re-run: only words not seen before are
+processed.
 
 - **Default:** English → English (monolingual definitions + synonyms).
 - **Bilingual:** e.g. `--target de` → English → German, with article/gender/plural filled.
@@ -18,8 +20,9 @@ only words not seen before are processed.
 
 ```
 vocabulary_builder.sqlite3 → [read, read-only] → [delta vs state.db]
-  → [Ollama: one JSON object per new word] → [Anki: ensure deck + note type, addNotes]
-  → [record processed words]
+  → [Ollama: one JSON object per new word, incl. lemma + part of speech]
+  → [Anki: lemma already has a note? merge the sentence into it : add a new note]
+  → [record processed words + lemma index]
 ```
 
 ## Prerequisites
@@ -63,7 +66,7 @@ Pass `--config PATH` to override. **Precedence:** flags → config file → buil
 ```sh
 koanki list   [--all]                              # dump the delta (or --all rows)
 koanki enrich --word W --context "..." [--book B]  # run ONE word through the LLM, print JSON
-koanki init-anki                                   # create the deck(s) + note type only
+koanki init-anki [--force-templates]               # create/upgrade the note type, create deck(s)
 koanki sync   [--dry-run] [--limit N]              # the main pipeline
 ```
 
@@ -92,23 +95,55 @@ A one-off run in another language/model needs no config edit:
 `sync`/`init-anki` create a note type **KOReader Vocab** with two card templates so each
 note studies both directions:
 
-- **Recognition (word → meaning):** front shows the word + sentence; back shows the
-  definition/translation, lemma, POS, synonyms.
-- **Production (meaning → word):** front shows the meaning; back recalls the word + sentence.
+- **Recognition (word → meaning):** front shows the base form (lemma) large and the sentence
+  with the form you met in **bold**; back shows the definition/translation, other meanings,
+  part of speech, synonyms, further example sentences and the book.
+- **Production (meaning → word):** front shows the meaning; back recalls the base form and
+  the sentence.
 
-Notes are routed into a per-source-language deck (see `[anki.decks]` in the config) and
-tagged `koreader` + `lang:<code>`. Low-confidence enrichments also get a `review` tag.
+The first field is `Lemma`, so Anki's own duplicate check works on the base form. Notes are
+routed into a per-source-language deck (see `[anki.decks]` in the config) and tagged
+`koreader` + `lang:<code>`. Low-confidence enrichments also get a `review` tag.
+
+### One note per base form
+
+A note is identified by source language + lemma + part of speech, so *lead* (to guide) and
+*lead* (the metal) get separate notes. When a new lookup belongs to a lemma that already has
+a note (`features.on_known_lemma = "merge"`, the default):
+
+- its sentence is appended to the note's **Examples** (no cap, no duplicates); the first
+  sentence on the front never changes, and review scheduling is not touched;
+- a second, small LLM call (the **sense check**) decides whether the word is used in a new
+  meaning there (*bank* of a river vs. *bank* for money). A new meaning goes into the
+  **OtherSenses** field on the back of the recognition card; an uncertain one only tags the
+  note `review`.
+
+### Upgrading from an earlier version
+
+The first `sync` or `init-anki` after updating upgrades an existing **KOReader Vocab** note
+type in place: it adds the new fields (`SeenAs`, `Forms`, `OtherSenses`, `Examples`) and moves
+`Lemma` to the first position. Existing notes and their review history stay as they are.
+
+- **Sync all your devices with AnkiWeb before upgrading.** Adding or moving fields is a schema
+  change, so Anki asks for a full upload at the next sync.
+- Card templates and styling are replaced only if you never changed them. Customized ones are
+  left alone and koanki logs a warning; `koanki init-anki --force-templates` replaces them.
+- Notes you already have for different forms of the same word (e.g. *ran* and *running*)
+  stay separate; new lookups merge into the first matching one.
 
 ## Idempotency
 
 A local `koanki-state.db` records every processed word, so the LLM never re-sees a known
-word and Anki never gets a duplicate (AnkiConnect's `allowDuplicate=false` is a second
-safety net). Re-running is always safe and only processes new lookups.
+word. It also keeps a **lemma index** (which note holds which base form). The index is only a
+cache: a note deleted in Anki is recreated on the next lookup, and notes created before the
+index existed are found in Anki and adopted. Re-running is always safe and only processes new
+lookups.
 
 ## Development
 
 ```sh
-go test ./...        # unit tests (reader, state, ollama httptest, anki httptest, prompt)
+go test ./...        # unit tests (reader, state, lemma, ollama/anki httptest, prompt,
+                     #   end-to-end sync against fake Ollama + fake AnkiConnect)
 go vet ./...
 ```
 

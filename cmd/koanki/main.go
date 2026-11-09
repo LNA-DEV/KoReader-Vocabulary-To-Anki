@@ -25,7 +25,7 @@ Usage:
   koanki sync      [flags]                     Read new words, enrich, push Anki notes
   koanki list      [flags] [--all]             Print the delta (or all) vocabulary rows
   koanki enrich    --word W [--context "..."]  Run one word through the LLM, print JSON
-  koanki init-anki [flags]                     Create the deck(s) + note type only
+  koanki init-anki [flags] [--force-templates] Create/upgrade the note type, create the deck(s)
 
 Common flags (override config.toml):
   --config PATH     Config file (optional; built-in defaults otherwise)
@@ -39,6 +39,9 @@ Common flags (override config.toml):
 Sync flags:
   --dry-run         Enrich and print notes, write nothing to Anki
   --limit N         Process at most N new words
+
+Init-anki flags:
+  --force-templates Replace customized card templates and CSS with the shipped version
 `
 
 func main() {
@@ -222,6 +225,7 @@ func runEnrich(ctx context.Context, args []string, logger *slog.Logger) error {
 func runInitAnki(ctx context.Context, args []string, logger *slog.Logger) error {
 	fs := flag.NewFlagSet("init-anki", flag.ExitOnError)
 	o := registerOverrides(fs)
+	force := fs.Bool("force-templates", false, "replace customized card templates and CSS")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -229,7 +233,7 @@ func runInitAnki(ctx context.Context, args []string, logger *slog.Logger) error 
 	if err != nil {
 		return err
 	}
-	return pipeline.New(cfg, logger).InitAnki(ctx)
+	return pipeline.New(cfg, logger).InitAnki(ctx, *force)
 }
 
 func truncate(s string, n int) string {

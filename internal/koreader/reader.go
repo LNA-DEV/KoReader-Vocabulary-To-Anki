@@ -111,14 +111,16 @@ func buildEntry(word, highlight, prev, next string, createdAt, titleID int64, bo
 	context := reconstructContext(prev, surface, next)
 
 	return model.VocabEntry{
-		Word:        word,
-		WordClean:   clean,
-		Surface:     surface,
-		Context:     context,
-		Book:        book,
-		TitleID:     titleID,
-		CreatedAt:   createdAt,
-		ContentHash: contentHash(word, surface, context),
+		Word:          word,
+		WordClean:     clean,
+		Surface:       surface,
+		Context:       context,
+		ContextBefore: strings.TrimSpace(prev),
+		ContextAfter:  strings.TrimSpace(next),
+		Book:          book,
+		TitleID:       titleID,
+		CreatedAt:     createdAt,
+		ContentHash:   contentHash(word, surface, context),
 	}
 }
 
